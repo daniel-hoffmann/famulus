@@ -1,0 +1,6 @@
+soul.md filter=git-crypt diff=git-crypt
+bedrock.md filter=git-crypt diff=git-crypt
+growth.md filter=git-crypt diff=git-crypt
+identity.md filter=git-crypt diff=git-crypt
+heartbeat.md filter=git-crypt diff=git-crypt
+user.md filter=git-crypt diff=git-crypt
