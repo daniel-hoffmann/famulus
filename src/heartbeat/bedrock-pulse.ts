@@ -5,7 +5,7 @@ import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { encode } from '../cipher/index.js'
 import { observeBedrockPulse } from './observer.js'
 import { GROWTH_PATH, BEDROCK_PATH, env } from '../config.js'
-import { log } from '../logger.js'
+import { log, verboseLog } from '../logger.js'
 
 const CANDIDATE_MODEL = 'llama3.2:3b'  // more capable than 1B for reading growth.md
 const BEDROCK_MIN_DAYS = 10
@@ -42,6 +42,7 @@ async function runBedrockPulse(): Promise<void> {
   log.info('heartbeat: bedrock pulse firing')
 
   const candidates = await identifyCandidates()
+  verboseLog.info({ candidatesFound: !!candidates }, 'heartbeat: bedrock candidates assessed')
   const systemPrompt = buildSystemPrompt()
 
   const pulseMessage = candidates
@@ -87,6 +88,8 @@ async function runBedrockPulse(): Promise<void> {
 function scheduleNextBedrockPulse(): void {
   const days = BEDROCK_MIN_DAYS + Math.random() * (BEDROCK_MAX_DAYS - BEDROCK_MIN_DAYS)
   const delayMs = days * 24 * 60 * 60 * 1000
+  const nextAt = new Date(Date.now() + delayMs).toISOString()
+  verboseLog.info({ nextAt }, 'heartbeat: next bedrock pulse scheduled')
   setTimeout(async () => {
     await runBedrockPulse()
     scheduleNextBedrockPulse()

@@ -83,7 +83,7 @@ const stmts = {
   ),
 
   getMessagesSince: db.prepare<[number]>(
-    'SELECT * FROM messages ORDER BY created_at ASC WHERE created_at >= ?'
+    'SELECT * FROM messages WHERE created_at >= ? ORDER BY created_at ASC'
   ),
 
   logPulse: db.prepare<[PulseType, PulseOutcome, number]>(

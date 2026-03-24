@@ -5,8 +5,8 @@ import path from 'path'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Repo root — src/config.ts is one level inside src/, so go up twice
-export const REPO_ROOT = path.resolve(__dirname, '..', '..')
+// Repo root — compiled to dist/config.js, one level up from dist/
+export const REPO_ROOT = path.resolve(__dirname, '..')
 
 // Persona files
 export const SOUL_PATH        = path.join(REPO_ROOT, 'soul.md')

@@ -7,7 +7,7 @@ import { observeRegularPulse } from './observer.js'
 import { isOllamaAvailable } from '../llm/providers/ollama.js'
 import { notifyDaniel } from '../channels/telegram.js'
 import { GROWTH_PATH, env } from '../config.js'
-import { log } from '../logger.js'
+import { log, verboseLog } from '../logger.js'
 
 const PULSE_MIN_MS = 2 * 60 * 60 * 1000  // 2 hours
 const PULSE_MAX_MS = 5 * 60 * 60 * 1000  // 5 hours
@@ -43,6 +43,7 @@ function parseResponse(response: string): { reflection: string | null; message: 
 
 async function runPulse(): Promise<void> {
   log.info('heartbeat: regular pulse firing')
+  verboseLog.info({ pendingFlags: getPendingFlags().length }, 'heartbeat: pulse context')
 
   const flags = getPendingFlags()
   const context = buildContext(flags)
@@ -69,6 +70,12 @@ async function runPulse(): Promise<void> {
     })
 
     const { reflection, message } = parseResponse(response.content)
+    verboseLog.info({
+      reflected: !!reflection,
+      reachedOut: !!message,
+      reflectionExcerpt: reflection ? reflection.slice(0, 120) : null,
+      messageExcerpt: message ? message.slice(0, 120) : null,
+    }, 'heartbeat: pulse response parsed')
 
     if (reflection) {
       const date = new Date().toISOString().split('T')[0]
@@ -94,6 +101,8 @@ async function runPulse(): Promise<void> {
 
 function scheduleNextPulse(): void {
   const delayMs = PULSE_MIN_MS + Math.random() * (PULSE_MAX_MS - PULSE_MIN_MS)
+  const nextAt = new Date(Date.now() + delayMs).toISOString()
+  verboseLog.info({ nextAt }, 'heartbeat: next regular pulse scheduled')
   setTimeout(async () => {
     await runPulse()
     scheduleNextPulse()

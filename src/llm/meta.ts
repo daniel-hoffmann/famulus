@@ -27,10 +27,12 @@ export async function getMetaTier(
 
   try {
     const raw = await callOllama(
-      { model: metaModel, systemPrompt: '', messages: [{ role: 'user', content: prompt }] },
+      { model: metaModel, systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
       baseUrl
     )
-    const parsed = JSON.parse(raw) as { tier?: string }
+    const match = raw.match(/\{[^{}]*\}/)
+    if (!match) return null
+    const parsed = JSON.parse(match[0]) as { tier?: string }
     if (parsed.tier && ['economy', 'balanced', 'quality'].includes(parsed.tier)) {
       return parsed.tier as ModelTier
     }

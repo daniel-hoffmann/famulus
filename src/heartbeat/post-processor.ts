@@ -1,10 +1,10 @@
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { addFlag } from './queue.js'
 import { env } from '../config.js'
-import { log } from '../logger.js'
+import { log, verboseLog } from '../logger.js'
 import type { Message } from '../llm/router.js'
 
-const META_MODEL = 'llama3.2:1b'
+const META_MODEL = 'llama3.2:3b'
 
 export async function assessConversation(messages: Message[]): Promise<void> {
   const baseUrl = env.OLLAMA_BASE_URL
@@ -27,10 +27,15 @@ export async function assessConversation(messages: Message[]): Promise<void> {
 
   try {
     const raw = await callOllama(
-      { model: META_MODEL, systemPrompt: '', messages: [{ role: 'user', content: prompt }] },
+      { model: META_MODEL, systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
       baseUrl
     )
-    const result = JSON.parse(raw) as { significance: string; summary: string }
+    const match = raw.match(/\{[^{}]*\}/)
+    if (!match) {
+      log.warn('post-processor: no JSON in response')
+      return
+    }
+    const result = JSON.parse(match[0]) as { significance: string; summary: string }
 
     if (result.significance === 'significant') {
       addFlag('reflection', result.summary)
@@ -40,6 +45,7 @@ export async function assessConversation(messages: Message[]): Promise<void> {
     }
 
     log.info({ significance: result.significance }, 'post-processor: assessment complete')
+    verboseLog.info({ summary: result.summary }, 'post-processor: assessment detail')
   } catch (err) {
     log.warn({ err }, 'post-processor: assessment failed')
   }

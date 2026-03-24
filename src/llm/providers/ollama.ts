@@ -2,6 +2,7 @@ export interface ProviderRequest {
   model: string
   systemPrompt: string
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  format?: 'json'
 }
 
 export async function callOllama(req: ProviderRequest, baseUrl: string): Promise<string> {
@@ -15,6 +16,7 @@ export async function callOllama(req: ProviderRequest, baseUrl: string): Promise
         ...req.messages,
       ],
       stream: false,
+      ...(req.format ? { format: req.format } : {}),
     }),
   })
 

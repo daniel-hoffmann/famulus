@@ -15,8 +15,16 @@ class TelegramChannel implements Channel {
       const text = ctx.message.text
       try {
         const response = await handler(text)
-        await ctx.reply(response)
-      } catch {
+        // Telegram max message length is 4096 chars
+        if (response.length <= 4096) {
+          await ctx.reply(response)
+        } else {
+          for (let i = 0; i < response.length; i += 4096) {
+            await ctx.reply(response.slice(i, i + 4096))
+          }
+        }
+      } catch (err) {
+        log.error({ err }, 'telegram handler error')
         await ctx.reply('Something went wrong. Try again in a moment.')
       }
     })
