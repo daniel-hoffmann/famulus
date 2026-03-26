@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx --env-file=.env src/index.ts",
-    "start": "node --env-file=.env dist/index.js"
+    "start": "node --env-file=.env --no-deprecation dist/index.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
