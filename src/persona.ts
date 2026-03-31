@@ -18,6 +18,16 @@ function readFile(filePath: string): string | null {
   return content || null
 }
 
+// The stable prefix — soul + identity only. Changes rarely, safe to cache.
+// Never include bedrock, growth, or memory here — those are dynamic.
+export function buildCacheablePrefix(): string {
+  const soul = readFile(SOUL_PATH)
+  const identity = readFile(IDENTITY_PATH)
+  return [soul, identity]
+    .filter((s): s is string => s !== null)
+    .join('\n\n---\n\n')
+}
+
 // Build the system prompt for a given context folder (defaults to 'personal')
 // Layers are composed in order: soul → identity → growth → bedrock → user → memory
 // Bedrock is decoded from cipher before injection — never stored decoded on disk

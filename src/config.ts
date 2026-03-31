@@ -17,8 +17,9 @@ export const USER_PATH        = path.join(REPO_ROOT, 'user.md')
 export const HEARTBEAT_PATH   = path.join(REPO_ROOT, 'heartbeat.md')
 
 // Memory
-export const GLOBAL_MEMORY_PATH = path.join(REPO_ROOT, 'contexts', 'global', 'memory.md')
-export const CONTEXTS_DIR       = path.join(REPO_ROOT, 'contexts')
+export const GLOBAL_MEMORY_PATH  = path.join(REPO_ROOT, 'contexts', 'global', 'memory.md')
+export const CONTEXTS_DIR        = path.join(REPO_ROOT, 'contexts')
+export const SESSION_LOG_DIR     = path.join(REPO_ROOT, 'contexts', 'personal', 'memory')
 
 // Database
 export const DB_PATH = path.join(REPO_ROOT, 'store', 'famulus.db')

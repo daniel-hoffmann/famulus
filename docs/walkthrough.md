@@ -59,6 +59,8 @@ The single source of truth for all configuration. Every other file that needs a 
 
 **`requireEnv(name)`** — reads an environment variable from `process.env` and throws immediately at startup if it's missing. Fail fast, fail clearly — better than a confusing error later when the variable is actually used.
 
+**`SESSION_LOG_DIR`** — path to `contexts/personal/memory/`. Added alongside the other path constants so `index.ts` doesn't hardcode directory paths.
+
 **Required vs optional env vars:**
 - `ANTHROPIC_API_KEY` and `TELEGRAM_BOT_TOKEN` use `requireEnv` — the process won't start without them.
 - `OLLAMA_BASE_URL` has a sensible default (`http://localhost:11434` — the Mini's local Ollama). Doesn't throw if missing.
@@ -137,6 +139,8 @@ Reads all persona files and composes them into the system prompt string sent to 
 
 **Type guard** — `.filter((s): s is string => s !== null)` filters out nulls and simultaneously narrows the TypeScript type from `(string | null)[]` to `string[]`. Without the `s is string` annotation, TypeScript wouldn't trust that the filtered array contains only strings.
 
+**`buildCacheablePrefix()`** — a second export that reads only `soul.md` and `identity.md`. These two files change rarely (soul is immutable; identity changes only by deliberate decision). They are the stable part of the system prompt and the only part safe to cache at the API level. Growth, bedrock, user, and memory are dynamic — they must not be cached. Callers that want caching call both functions and pass the results separately to the router.
+
 ---
 
 ## `src/logger.ts`
@@ -159,7 +163,19 @@ Anthropic SDK wrapper. Takes a request, calls the API, returns the response text
 
 **`max_tokens: 8192`** — Claude requires an explicit maximum. 8192 tokens is generous for conversational responses without being wasteful.
 
-**`response.content[0]`** — Claude returns content as an array of typed blocks (text, tool use, etc.). We only use text responses, so we take the first block and assert it's `type: 'text'`. Anything else is unexpected and throws.
+**`cacheablePrefix`** — optional field on `ProviderRequest`. When provided, the `system` field sent to the API changes from a plain string to an array of two content blocks:
+- Block 1: the stable prefix (soul + identity), marked with `cache_control: { type: 'ephemeral' }` — Anthropic caches this server-side for 5 minutes
+- Block 2: the dynamic suffix (growth, bedrock, user, memory) — sent fresh every time, never cached
+
+When absent, `system` is a plain string, exactly as before. All non-conversation calls (pulses, memory updates, etc.) take this path.
+
+**Why caching helps.** On a back-and-forth conversation, every message after the first will find the soul+identity prefix already cached at Anthropic's end. Cache hits are billed at ~10% of input token cost. Soul and identity are typically 600–800 tokens — modest per call, meaningful over a day of conversation.
+
+**Why bedrock must never be in the prefix.** Bedrock is decoded at runtime from the cipher and is different for every process start (or after any bedrock update). It cannot be safely cached. The `buildCacheablePrefix()` function in `persona.ts` is explicitly limited to soul and identity for this reason.
+
+**`webSearch`** — optional field on `ProviderRequest`. When `true`, the `web_search_20250305` server tool is added to the API call. Claude decides autonomously whether to invoke it — the tool is an option, not an instruction. Currently enabled on all conversation requests so Ellis can search whenever she judges it useful.
+
+**Response parsing** — filters all content blocks for `type === 'text'` and joins them. Web search returns additional block types (`ServerToolUseBlock`, `WebSearchToolResultBlock`) alongside the text — the filter handles these correctly without special-casing. Required upgrading the SDK from 0.39.0 → 0.80.0, which introduced typed support for server tools.
 
 ---
 
@@ -177,7 +193,7 @@ Raw `fetch` Ollama wrapper. No client library needed — Ollama's API is simple 
 
 ## `src/llm/meta.ts`
 
-Uses the local 1B model to dynamically pick a tier for each request based on actual conversation content.
+Uses the local 3B model to dynamically pick a tier for each request based on actual conversation content.
 
 **`import type`** — imports `ModelTier` and `RequestType` as type-only. These are erased before the code runs, so at runtime `meta.ts` has zero dependency on `router.ts`. This avoids a circular dependency (router imports meta, meta would import router).
 
@@ -217,6 +233,8 @@ The public face of the LLM layer. Everything else in the codebase calls `route(r
 **`loadConfig()` on every call** — re-reads the JSON file each time. This means editing `config/llm.json` takes effect on the next request without restarting the process. The file is tiny and OS-cached so the overhead is negligible.
 
 **`containsBedrock` selects the logger** — when true, all logging goes to `internalLog` (the restricted stream). Request type, model, and outcome are logged. Prompt content is never logged.
+
+**`cacheablePrefix` threading** — passed through from `LLMRequest` to `callClaude` in both the immediate path and the cloud fallback path. Ollama calls never receive it — it's not a field on the Ollama `ProviderRequest`.
 
 ---
 
@@ -310,10 +328,13 @@ The entry point. No logic — purely wiring. Everything has already been built i
 **`handleMessage`** — the conversation loop:
 1. Save incoming message to DB
 2. Fetch up to 50 recent messages as history
-3. Build the system prompt (includes all persona layers and bedrock)
-4. Route to LLM
+3. Build the cacheable prefix (soul + identity) and the full system prompt separately
+4. Route to LLM, passing both — the router threads the prefix through to Claude for server-side caching
 5. Save response to DB
-6. Fire post-processor asynchronously and return the response
+6. Append exchange to today's session log file
+7. Fire post-processor asynchronously and return the response
+
+**`appendToSessionLog`** — inline function that writes each exchange to `contexts/personal/memory/YYYY-MM-DD.md`. Creates the directory and file if they don't exist. Each entry has a `### HH:MM` timestamp header followed by the user and assistant turns. These files are git-crypt encrypted (they fall under `contexts/**`) so conversation content stays private in the repo.
 
 **`assessConversation` is fire-and-forget** — not awaited. The user gets their reply immediately; significance assessment happens in the background. Errors are logged and swallowed — a failed assessment never surfaces to the user.
 

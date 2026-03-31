@@ -10,7 +10,7 @@
     "ollama_mini": {
       "base_url": "http://localhost:11434",
       "models": {
-        "meta": "llama3.2:1b",
+        "meta": "llama3.2:3b",
         "economy": "llama3.2:3b"
       }
     },
@@ -30,6 +30,6 @@
   },
   "meta_router": {
     "enabled": true,
-    "model": "llama3.2:1b"
+    "model": "llama3.2:3b"
   }
 }

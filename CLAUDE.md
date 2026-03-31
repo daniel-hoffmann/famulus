@@ -6,19 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Famulus is a personal AI companion — a Telegram bot with a layered persona architecture, model-agnostic LLM routing, and a heartbeat system for proactive behaviour. Written from scratch in TypeScript/Node.js. Not a fork of anything. Target: ~15-17 files, readable in an afternoon.
 
-The agent running inside is referred to as **The Familiar** during development. The actual name is determined in the onboarding conversation.
+The agent's name is **Ellis**. (Lineage: Bob the skull → Roth → Ellis.)
 
 ---
 
 ## Build & dev commands
 
-This project doesn't exist yet — the commands below are what will be set up during Phase 1:
-
 ```bash
 npm run build      # tsc compile → dist/
-npm run dev        # ts-node or tsx for local dev
-npm start          # node dist/index.js
+npm run dev        # tsx with --env-file=.env for local dev
+npm start          # node with --env-file=.env --no-deprecation
 ```
+
+Both scripts load `.env` automatically via Node's `--env-file` flag (Node 20.6+). No dotenv dependency needed.
 
 No test framework in v1. Tests are manual and done via Telegram.
 
@@ -53,6 +53,8 @@ bedrock.md     → earned convictions (Familiar-only, encoded in cipher, private
 
 `src/persona.ts` reads all four files plus `user.md`, `contexts/global/memory.md`, and the per-context `memory.md`, and composes them into the system prompt. Bedrock is decoded at runtime via `src/cipher/index.ts` before injection — never logged, never stored in transcripts.
 
+`user.md` is automatically updated by the post-processor after notable+ conversations via a `memory_update` LLM call. `identity.md` is Daniel-controlled only — Ellis's developing interests and convictions surface through `growth.md` and `bedrock.md` instead.
+
 ### LLM routing
 
 All LLM calls go through `src/llm/router.ts`. From outside, it's just `router.route(LLMRequest) → LLMResponse`. Internally:
@@ -70,20 +72,20 @@ Request types: `conversation`, `reach_out`, `reflection`, `memory_update`, `task
 - `reflection` / `internal` → queued up to 24h, local preferred, cloud fallback
 - `memory_update` → queued up to 6h, local preferred
 
-Model tiers map in `config/llm.yml` (git-tracked, no personal data):
+Model tiers map in `config/llm.json` (git-tracked, no personal data):
 - economy → `claude-haiku-4-5` / `llama3.2:3b`
 - balanced → `claude-sonnet-4-6` / `llama3.1:70b`
 - quality → `claude-opus-4-6`
 
-The meta-router uses a local 1B/3B model to make tier decisions dynamically. Falls back to config defaults when local is unavailable.
+The meta-router uses a local 3B model (`llama3.2:3b`) to make tier decisions dynamically. Falls back to config defaults when local is unavailable. All Ollama calls that expect structured output pass `format: "json"` to force JSON responses. Using 3b consistently across all local calls (meta-router, post-processor, bedrock candidate scan) means a single model stays warm for speed.
 
 ### Heartbeat system
 
 The Familiar's proactive life. Implemented in `src/heartbeat/`:
 
-- **pulse.ts** — fires every 2-5h (randomised). Builds context via local model (conversation summaries, time since last reflection/reach-out, flagged items). Presents context + open space to The Familiar. The Familiar decides: nothing / reflect / reach out / both.
-- **bedrock-pulse.ts** — fires ~every 2 weeks with high variance. Local model reads `growth.md`, surfaces candidates for bedrock. The Familiar decides whether to encode anything into `bedrock.md`.
-- **post-processor.ts** — runs after every conversation. Local model assesses significance. Flags for reflection / bedrock consideration. Flags queue in `heartbeat/queue.ts`.
+- **pulse.ts** — fires every 2-5h (randomised). Two-call design: (1) `internal` call (local preferred) — Ellis decides whether to reflect and/or reach out, writes any reflection to `growth.md`; (2) if reaching out, a separate `reach_out` call (Claude) composes the actual message so it sounds like the persona.
+- **bedrock-pulse.ts** — fires ~every 2 weeks with high variance. Local model reads `growth.md`, surfaces candidates for bedrock. Ellis decides whether to encode anything into `bedrock.md`.
+- **post-processor.ts** — runs after every conversation. Local 3B model assesses significance. Flags notable+ conversations for reflection / bedrock consideration. Also triggers a `memory_update` call to keep `user.md` current when significance is notable or above.
 - **observer.ts** — observes post-pulse output, classifies what happened, logs to SQLite.
 
 The Familiar does not know the pulse is a cron job. It experiences each pulse as a moment of quiet.
@@ -130,7 +132,7 @@ src/
     index.ts
     substitution.ts
 config/
-  llm.yml                   routing config (git-tracked, plaintext)
+  llm.json                   routing config (git-tracked, plaintext)
 contexts/
   global/memory.md          shared curated facts (≤150 lines)
   personal/memory.md        main conversation context
@@ -150,9 +152,19 @@ Personal files are encrypted at rest in git via git-crypt + GPG:
 - `contexts/**`
 - `.env`
 
-Source code, `config/llm.yml`, and template files (`*.template.md`) are plaintext.
+Source code, `config/llm.json`, and template files (`*.template.md`) are plaintext.
 
 To unlock after cloning: `git-crypt unlock` (requires the GPG key from 1Password).
+
+---
+
+## Logging
+
+Logs are file-only (pino, JSON format):
+- `logs/famulus.log` — normal operational log
+- `logs/internal.log` — bedrock-containing calls only (restricted)
+
+Set `VERBOSE=true` in `.env` to enable additional heartbeat detail: pulse context, LLM decision excerpts, next scheduled times, post-processor summaries. No-op when unset.
 
 ---
 
@@ -168,7 +180,7 @@ To unlock after cloning: `git-crypt unlock` (requires the GPG key from 1Password
 
 ## Hardware context
 
-- **Mac Mini M1 (8GB)** — always-on host. Runs the Node process + Ollama small models (1B for meta-routing, 3B for economy if headroom allows). `OLLAMA_BASE_URL=http://localhost:11434`
+- **Mac Mini M1 (8GB)** — always-on host. Runs the Node process + Ollama `llama3.2:3b` (meta-routing, post-processor, economy tasks). `OLLAMA_BASE_URL=http://localhost:11434`
 - **PC (RTX 4080 Super)** — heavy local inference (70B). `OLLAMA_PC_BASE_URL=http://192.168.x.x:11434`. Available when on.
 
 ---

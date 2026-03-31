@@ -27,6 +27,8 @@ export interface LLMRequest {
   type: RequestType
   containsBedrock: boolean
   systemPrompt: string
+  cacheablePrefix?: string
+  webSearch?: boolean
   messages: Message[]
   familiarPreference?: 'local' | 'quality' | 'economy'
 }
@@ -88,7 +90,7 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
   if (rule.urgency === 'immediate' || !rule.allow_local) {
     const model = config.providers.claude.models[tier]
     logger.info({ type: request.type, model, provider: 'claude' }, 'llm request')
-    const content = await callClaude({ model, systemPrompt: request.systemPrompt, messages: request.messages })
+    const content = await callClaude({ model, systemPrompt: request.systemPrompt, cacheablePrefix: request.cacheablePrefix, webSearch: request.webSearch, messages: request.messages })
     return { content, model, provider: 'claude' }
   }
 
@@ -113,7 +115,7 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
 
   const fallback = async (): Promise<string> => {
     logger.info({ type: request.type, model: cloudModel, provider: 'claude', reason: 'queue_timeout' }, 'llm fallback')
-    return callClaude({ model: cloudModel, systemPrompt: request.systemPrompt, messages: request.messages })
+    return callClaude({ model: cloudModel, systemPrompt: request.systemPrompt, cacheablePrefix: request.cacheablePrefix, webSearch: request.webSearch, messages: request.messages })
   }
 
   logger.info({ type: request.type, model: localModel, provider: 'ollama' }, 'llm request')

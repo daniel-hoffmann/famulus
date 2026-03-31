@@ -8,7 +8,7 @@
     "start": "node --env-file=.env --no-deprecation dist/index.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.80.0",
     "better-sqlite3": "^11.9.1",
     "grammy": "^1.34.0",
     "pino": "^9.6.0"
