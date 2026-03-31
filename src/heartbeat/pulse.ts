@@ -32,12 +32,12 @@ function buildContext(flags: PendingFlag[]): string {
   return context
 }
 
-function parseResponse(response: string): { reflection: string | null; message: string | null } {
-  const reflectionMatch = response.match(/REFLECTION:\s*([\s\S]*?)(?:\/REFLECTION|$)/i)
-  const messageMatch = response.match(/MESSAGE:\s*([\s\S]*?)(?:\/MESSAGE|$)/i)
+function parseInternalResponse(response: string): { reflection: string | null; reachOutNote: string | null } {
+  const reflectionMatch = response.match(/REFLECTION:\s*([\s\S]*?)\/REFLECTION/i)
+  const reachOutMatch = response.match(/REACH_OUT:\s*([\s\S]*?)\/REACH_OUT/i)
   return {
     reflection: reflectionMatch?.[1]?.trim() ?? null,
-    message: messageMatch?.[1]?.trim() ?? null,
+    reachOutNote: reachOutMatch?.[1]?.trim() ?? null,
   }
 }
 
@@ -49,32 +49,34 @@ async function runPulse(): Promise<void> {
   const context = buildContext(flags)
   const systemPrompt = buildSystemPrompt()
 
-  const pulseMessage =
+  // Internal call (local preferred): decide what to do and write any reflection
+  const internalPrompt =
     `A quiet moment.\n\n` +
     `${context}\n` +
-    `Do whatever feels right. You might reflect, reach out, or let this pass.\n\n` +
-    `To write a reflection for your growth record:\n` +
+    `If something calls for reflection, write it:\n` +
     `REFLECTION:\n<your reflection>\n/REFLECTION\n\n` +
-    `To send a message to Daniel:\n` +
-    `MESSAGE:\n<your message>\n/MESSAGE`
+    `If you want to reach out to Daniel, note briefly what's on your mind (one sentence):\n` +
+    `REACH_OUT:\n<what you'd like to say>\n/REACH_OUT\n\n` +
+    `Otherwise, let this pass.`
 
   let reflected = false
   let reachedOut = false
 
   try {
-    const response = await route({
+    const internalResponse = await route({
       type: 'internal',
       containsBedrock: true,
       systemPrompt,
-      messages: [{ role: 'user', content: pulseMessage }],
+      messages: [{ role: 'user', content: internalPrompt }],
     })
 
-    const { reflection, message } = parseResponse(response.content)
+    const { reflection, reachOutNote } = parseInternalResponse(internalResponse.content)
+
     verboseLog.info({
       reflected: !!reflection,
-      reachedOut: !!message,
+      wantsToReachOut: !!reachOutNote,
       reflectionExcerpt: reflection ? reflection.slice(0, 120) : null,
-      messageExcerpt: message ? message.slice(0, 120) : null,
+      reachOutNote,
     }, 'heartbeat: pulse response parsed')
 
     if (reflection) {
@@ -85,8 +87,16 @@ async function runPulse(): Promise<void> {
       reflected = true
     }
 
-    if (message) {
-      await notifyDaniel(message)
+    if (reachOutNote) {
+      // Compose the actual message through Claude so it sounds like the persona
+      const reachOutResponse = await route({
+        type: 'reach_out',
+        containsBedrock: false,
+        systemPrompt,
+        messages: [{ role: 'user', content: `You want to reach out to Daniel. What's on your mind: "${reachOutNote}"\n\nWrite your message to him now.` }],
+      })
+      verboseLog.info({ messageExcerpt: reachOutResponse.content.slice(0, 120) }, 'heartbeat: reach_out composed')
+      await notifyDaniel(reachOutResponse.content)
       reachedOut = true
     }
 
