@@ -23,7 +23,7 @@
   "routing": {
     "conversation":   { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
     "reach_out":      { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
-    "reflection":     { "default_tier": "economy",  "urgency": "whenever",  "allow_local": true, "prefer_local": true, "queue_timeout_hours": 24 },
+    "reflection":     { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
     "memory_update":  { "default_tier": "economy",  "urgency": "queued",    "allow_local": true, "queue_timeout_hours": 6 },
     "internal":       { "default_tier": "balanced", "urgency": "whenever",  "allow_local": true, "prefer_local": true, "queue_timeout_hours": 24 },
     "task":           { "default_tier": "balanced", "urgency": "queued" }

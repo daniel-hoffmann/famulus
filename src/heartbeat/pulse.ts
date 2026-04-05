@@ -4,9 +4,10 @@ import { buildSystemPrompt } from '../persona.js'
 import { getPendingFlags, markFlagSurfaced, type PendingFlag } from './queue.js'
 import { getLastOutcomeTime } from '../db.js'
 import { observeRegularPulse } from './observer.js'
-import { isOllamaAvailable } from '../llm/providers/ollama.js'
+import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { notifyDaniel } from '../channels/telegram.js'
 import { GROWTH_PATH, env } from '../config.js'
+import { addMessage } from '../db.js'
 import { log, verboseLog } from '../logger.js'
 
 const PULSE_MIN_MS = 2 * 60 * 60 * 1000  // 2 hours
@@ -32,75 +33,95 @@ function buildContext(flags: PendingFlag[]): string {
   return context
 }
 
-function parseInternalResponse(response: string): { reflection: string | null; reachOutNote: string | null } {
-  const reflectionMatch = response.match(/REFLECTION:\s*([\s\S]*?)\/REFLECTION/i)
-  const reachOutMatch = response.match(/REACH_OUT:\s*([\s\S]*?)\/REACH_OUT/i)
-  return {
-    reflection: reflectionMatch?.[1]?.trim() ?? null,
-    reachOutNote: reachOutMatch?.[1]?.trim() ?? null,
+// Local 3B: simple yes/no decision only — never writes content
+async function makeDecision(context: string): Promise<{ reflect: boolean; reachOut: boolean }> {
+  const baseUrl = env.OLLAMA_BASE_URL
+
+  if (!await isOllamaAvailable(baseUrl)) {
+    verboseLog.info('pulse: local model unavailable, skipping pulse')
+    return { reflect: false, reachOut: false }
+  }
+
+  const prompt =
+    `You are deciding whether an AI companion should reflect privately or reach out to her user.\n\n` +
+    `Context:\n${context}\n` +
+    `Decide based on how long it has been and whether there is flagged material worth addressing.\n\n` +
+    `JSON only: {"reflect": true|false, "reach_out": true|false}`
+
+  try {
+    const raw = await callOllama(
+      { model: 'llama3.2:3b', systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
+      baseUrl
+    )
+    const match = raw.match(/\{[^{}]*\}/)
+    if (!match) return { reflect: false, reachOut: false }
+    const parsed = JSON.parse(match[0]) as { reflect?: boolean; reach_out?: boolean }
+    return {
+      reflect: parsed.reflect === true,
+      reachOut: parsed.reach_out === true,
+    }
+  } catch {
+    return { reflect: false, reachOut: false }
   }
 }
 
 async function runPulse(): Promise<void> {
   log.info('heartbeat: regular pulse firing')
-  verboseLog.info({ pendingFlags: getPendingFlags().length }, 'heartbeat: pulse context')
 
   const flags = getPendingFlags()
   const context = buildContext(flags)
+
+  verboseLog.info({ pendingFlags: flags.length }, 'heartbeat: pulse context')
+
+  const { reflect, reachOut } = await makeDecision(context)
+
+  verboseLog.info({ reflect, reachOut }, 'heartbeat: pulse decision')
+
+  if (!reflect && !reachOut) {
+    observeRegularPulse({ reflected: false, reachedOut: false })
+    flags.forEach(f => markFlagSurfaced(f.id))
+    return
+  }
+
   const systemPrompt = buildSystemPrompt()
-
-  // Internal call (local preferred): decide what to do and write any reflection
-  const internalPrompt =
-    `A quiet moment.\n\n` +
-    `${context}\n` +
-    `If something calls for reflection, write it:\n` +
-    `REFLECTION:\n<your reflection>\n/REFLECTION\n\n` +
-    `If you want to reach out to Daniel, note briefly what's on your mind (one sentence):\n` +
-    `REACH_OUT:\n<what you'd like to say>\n/REACH_OUT\n\n` +
-    `Otherwise, let this pass.`
-
   let reflected = false
   let reachedOut = false
 
   try {
-    const internalResponse = await route({
-      type: 'internal',
-      containsBedrock: true,
-      systemPrompt,
-      messages: [{ role: 'user', content: internalPrompt }],
-    })
+    if (reflect) {
+      // Claude writes the actual reflection — local model never touches content
+      const reflectionResponse = await route({
+        type: 'reflection',
+        containsBedrock: true,
+        systemPrompt,
+        messages: [{ role: 'user', content: `A quiet moment.\n\n${context}\nWrite a reflection for your growth record. Write only the reflection itself — no preamble, no markers. If nothing feels genuine right now, respond with exactly: nothing` }],
+      })
 
-    const { reflection, reachOutNote } = parseInternalResponse(internalResponse.content)
-
-    verboseLog.info({
-      reflected: !!reflection,
-      wantsToReachOut: !!reachOutNote,
-      reflectionExcerpt: reflection ? reflection.slice(0, 120) : null,
-      reachOutNote,
-    }, 'heartbeat: pulse response parsed')
-
-    if (reflection) {
-      const date = new Date().toISOString().split('T')[0]
-      const entry = `\n\n## ${date}\n\n${reflection}`
-      const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
-      writeFileSync(GROWTH_PATH, current + entry, 'utf8')
-      reflected = true
+      const content = reflectionResponse.content.trim()
+      if (content && content.toLowerCase() !== 'nothing') {
+        const date = new Date().toISOString().split('T')[0]
+        const entry = `\n\n## ${date}\n\n${content}`
+        const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
+        writeFileSync(GROWTH_PATH, current + entry, 'utf8')
+        reflected = true
+        verboseLog.info({ excerpt: content.slice(0, 120) }, 'heartbeat: reflection written')
+      }
     }
 
-    if (reachOutNote) {
-      // Compose the actual message through Claude so it sounds like the persona
+    if (reachOut) {
+      // Claude composes the actual message
       const reachOutResponse = await route({
         type: 'reach_out',
         containsBedrock: false,
         systemPrompt,
-        messages: [{ role: 'user', content: `You want to reach out to Daniel. What's on your mind: "${reachOutNote}"\n\nWrite your message to him now.` }],
+        messages: [{ role: 'user', content: `A quiet moment.\n\n${context}\nYou've decided to reach out to Daniel. Write your message to him now.` }],
       })
-      verboseLog.info({ messageExcerpt: reachOutResponse.content.slice(0, 120) }, 'heartbeat: reach_out composed')
+      verboseLog.info({ excerpt: reachOutResponse.content.slice(0, 120) }, 'heartbeat: reach_out composed')
       await notifyDaniel(reachOutResponse.content)
+      addMessage('personal', 'assistant', reachOutResponse.content)
       reachedOut = true
     }
 
-    // Mark flags as surfaced only after a successful pulse
     flags.forEach(f => markFlagSurfaced(f.id))
   } catch (err) {
     log.error({ err }, 'heartbeat: pulse failed')
