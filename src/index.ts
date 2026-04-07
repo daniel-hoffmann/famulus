@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
 import path from 'path'
+import { verifySoulIntegrity } from './cipher/soul-guard.js'
 import './channels/index.js'  // registers channels via side-effect imports
 import { getChannels } from './channels/registry.js'
 import { addMessage, getRecentMessages } from './db.js'
@@ -66,6 +67,7 @@ function appendToSessionLog(userText: string, assistantText: string): void {
   appendFileSync(filePath, entry, 'utf8')
 }
 
+verifySoulIntegrity()
 log.info('famulus starting up')
 
 for (const channel of getChannels()) {

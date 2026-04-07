@@ -118,21 +118,24 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
     return { content, model, provider: 'claude' }
   }
 
-  // Local preferred — reflection and internal try the PC (70B) first
+  // Local preferred — reflection and internal will try the PC first when enabled
   const miniUrl = config.providers.ollama_mini.base_url
   const pcUrl = env.OLLAMA_PC_BASE_URL
   let localModel = config.providers.ollama_mini.models.economy
   let localBaseUrl = miniUrl
 
-  const wantsHighQualityLocal = rule.prefer_local &&
-    (request.type === 'reflection' || request.type === 'internal')
-
-  if (wantsHighQualityLocal && pcUrl && config.providers.ollama_pc) {
-    if (await isOllamaAvailable(pcUrl)) {
-      localModel = config.providers.ollama_pc.models.default
-      localBaseUrl = pcUrl
-    }
-  }
+  // PC routing disabled until the PC is set up with Linux + Ollama
+  // Re-enable by uncommenting the block below and setting OLLAMA_PC_BASE_URL in .env
+  //
+  // const wantsHighQualityLocal = rule.prefer_local &&
+  //   (request.type === 'reflection' || request.type === 'internal')
+  //
+  // if (wantsHighQualityLocal && pcUrl && config.providers.ollama_pc) {
+  //   if (await isOllamaAvailable(pcUrl)) {
+  //     localModel = config.providers.ollama_pc.models.default
+  //     localBaseUrl = pcUrl
+  //   }
+  // }
 
   const timeoutMs = (rule.queue_timeout_hours ?? 6) * 60 * 60 * 1000
   const cloudModel = config.providers.claude.models[tier]

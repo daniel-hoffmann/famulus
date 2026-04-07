@@ -10,6 +10,7 @@ export const REPO_ROOT = path.resolve(__dirname, '..')
 
 // Persona files
 export const SOUL_PATH        = path.join(REPO_ROOT, 'soul.md')
+export const SOUL_HASH_PATH   = path.join(REPO_ROOT, 'soul.md.sha256')
 export const IDENTITY_PATH    = path.join(REPO_ROOT, 'identity.md')
 export const GROWTH_PATH      = path.join(REPO_ROOT, 'growth.md')
 export const BEDROCK_PATH     = path.join(REPO_ROOT, 'bedrock.md')

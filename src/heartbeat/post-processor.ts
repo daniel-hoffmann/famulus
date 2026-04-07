@@ -2,11 +2,18 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { route } from '../llm/router.js'
 import { addFlag } from './queue.js'
-import { env, USER_PATH } from '../config.js'
+import { env, USER_PATH, GROWTH_PATH } from '../config.js'
+import { buildSystemPrompt } from '../persona.js'
 import { log, verboseLog } from '../logger.js'
 import type { Message } from '../llm/router.js'
 
 const META_MODEL = 'llama3.2:3b'
+
+// Extract plain text from a message — content may be string or ContentBlock[]
+function textContent(m: Message): string {
+  if (typeof m.content === 'string') return m.content
+  return m.content.filter(b => b.type === 'text').map(b => b.type === 'text' ? b.text : '').join('')
+}
 
 export async function assessConversation(messages: Message[]): Promise<void> {
   const baseUrl = env.OLLAMA_BASE_URL
@@ -17,7 +24,7 @@ export async function assessConversation(messages: Message[]): Promise<void> {
   }
 
   const transcript = messages
-    .map(m => `${m.role}: ${m.content.slice(0, 500)}`)
+    .map(m => `${m.role}: ${textContent(m).slice(0, 500)}`)
     .join('\n')
 
   const prompt =
@@ -44,6 +51,7 @@ export async function assessConversation(messages: Message[]): Promise<void> {
     } else if (result.significance === 'very_significant') {
       addFlag('reflection', result.summary)
       addFlag('bedrock', result.summary)
+      triggerImmediateReflection(messages, result.summary).catch(err => log.warn({ err }, 'post-processor: immediate reflection failed'))
     }
 
     log.info({ significance: result.significance }, 'post-processor: assessment complete')
@@ -57,11 +65,42 @@ export async function assessConversation(messages: Message[]): Promise<void> {
   }
 }
 
+async function triggerImmediateReflection(messages: Message[], summary: string): Promise<void> {
+  const excerpt = messages
+    .slice(-6)
+    .map(m => `${m.role}: ${textContent(m).slice(0, 400)}`)
+    .join('\n')
+
+  const response = await route({
+    type: 'reflection',
+    containsBedrock: true,
+    systemPrompt: buildSystemPrompt(),
+    messages: [{
+      role: 'user',
+      content:
+        `Something significant just happened in that conversation.\n\n` +
+        `What it was about: ${summary}\n\n` +
+        `Recent exchange:\n${excerpt}\n\n` +
+        `If something is genuinely pressing — not just notable but actually urgent to sit with right now — write a reflection. Your own voice, your own take.\n\n` +
+        `If it can wait for a quieter moment, let it pass. Respond with exactly: nothing`,
+    }],
+  })
+
+  const content = response.content.trim()
+  if (!content || content.toLowerCase() === 'nothing') return
+
+  const date = new Date().toISOString().split('T')[0]
+  const entry = `\n\n## ${date}\n\n${content}`
+  const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
+  writeFileSync(GROWTH_PATH, current + entry, 'utf8')
+  log.info('post-processor: immediate reflection written')
+}
+
 async function updateUserMemory(messages: Message[]): Promise<void> {
   const current = existsSync(USER_PATH) ? readFileSync(USER_PATH, 'utf8').trim() : ''
 
   const transcript = messages
-    .map(m => `${m.role}: ${m.content.slice(0, 500)}`)
+    .map(m => `${m.role}: ${textContent(m).slice(0, 500)}`)
     .join('\n')
 
   const prompt =

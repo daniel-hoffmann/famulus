@@ -12,9 +12,23 @@ A personal AI companion built from scratch in TypeScript. Telegram interface, mo
 
 | Machine | Role |
 |---|---|
-| Mac Mini M1 8GB | Dedicated agent host — always on. Runs Node process, Ollama small model (1-3B) for meta-routing and economy tasks |
+| Mac Mini M1 8GB | Dedicated agent host — always on. Runs Node process + Ollama `llama3.2:3b` for meta-routing and classification |
 | MacBook Air M1 | Daily driver + development machine |
-| PC (RTX 4080 Super) | Ollama large model (70B) for heavy local inference when on — reflection, internal reasoning |
+| PC (RTX 4080 Super) | Future: Linux + Ollama for heavy local inference — reflection, internal reasoning |
+
+### Local model notes
+
+**Mac Mini M1 8GB** — already at capacity with `llama3.2:3b` (~2GB) plus macOS (~2-3GB) and the Node process. Do not attempt a larger model here — it will swap and become useless. The 3B is the right permanent choice for this machine: meta-routing, post-processor classification, decision calls (yes/no). All content generation (reflections, reach-outs, memory updates) routes to Claude.
+
+**PC (RTX 4080 Super, 16GB VRAM)** — when set up with Linux + Ollama, can run significantly larger models:
+- **Qwen2.5:14B** (Q4_K_M, ~8.7GB) — fits comfortably, fast (~30-50 tok/s), strong reasoning. Safe starting point.
+- **Gemma 2:27B** (Q4_K_M, ~16GB) — Google's model, excellent quality, fits at the edge of 16GB. Best quality that fits in pure VRAM.
+- **Qwen2.5:32B** (Q3 quantization) — possible but tight; needs testing.
+- **Llama 3.3:70B** — requires CPU offloading (~5-10 tok/s), workable for background tasks.
+
+Recommended starting point: **Qwen2.5:14B** for reliability and speed, test **Gemma 2:27B** for quality comparison.
+
+What to route to the PC: `reflection`, `internal`, `memory_update`. Keep `conversation` and `reach_out` on Claude — persona fidelity matters there and the cost is justified. The PC routing is already built into the router; re-enable by uncommenting the PC block in `src/llm/router.ts` and setting `OLLAMA_PC_BASE_URL` in `.env`.
 
 ---
 
@@ -51,12 +65,11 @@ fnm default 22
 # 4. Git
 brew install git
 
-# 5. Ollama (for meta-routing and economy tasks)
+# 5. Ollama (for meta-routing and classification)
 brew install ollama
 
-# 6. Pull a small model for meta-routing (fits within 8GB alongside macOS + Node)
-ollama pull llama3.2:1b   # ~800MB — meta-routing, lightweight classification
-ollama pull llama3.2:3b   # ~2GB — economy tasks, memory updates (if headroom allows)
+# 6. Pull the model — 3B is the right permanent choice for 8GB
+ollama pull llama3.2:3b   # ~2GB — meta-routing, classification, decision calls
 ```
 
 ---

@@ -111,6 +111,24 @@ Pure mechanics of the substitution cipher. Given a seed string, produce a determ
 
 ---
 
+## `src/cipher/soul-guard.ts`
+
+Startup integrity check for `soul.md`. Runs before anything else in `src/index.ts`.
+
+**Why this exists** — the bedrock cipher is derived from `sha256(soul.md)`. If `soul.md` changes — even a single character, even accidentally — the cipher key changes and `bedrock.md` becomes permanently unreadable. This guard catches that before it causes silent corruption.
+
+**`computeSoulHash()`** — reads `soul.md` and returns its SHA-256 hex digest. The hash is deterministic: same file contents always produce the same hash.
+
+**First run** — if `soul.md.sha256` doesn't exist yet (fresh clone, first startup), the hash is written and startup continues normally. The file should then be committed to the repo so it travels with future clones.
+
+**Subsequent runs** — the stored hash is compared against the current hash. If they match, startup continues silently. If they differ, a clear error is printed to `console.error` (visible whether you're watching a terminal or logs) and the process throws — halting before any LLM calls or bedrock decoding happens.
+
+**Recovery** — if the change was accidental, `git checkout soul.md` restores the original and the next startup succeeds. The error message tells you exactly this.
+
+**`soul.md.sha256`** — stored in the repo root, git-tracked and plaintext. Not listed in `.gitattributes` so git-crypt ignores it (git-crypt only encrypts explicitly listed files).
+
+---
+
 ## `src/cipher/index.ts`
 
 The public API for the cipher: just `encode(text)` and `decode(encoded)`.
@@ -129,7 +147,7 @@ The public API for the cipher: just `encode(text)` and `decode(encoded)`.
 
 Reads all persona files and composes them into the system prompt string sent to the LLM on every call.
 
-**Composition order** — `soul → identity → growth → bedrock → user → global memory → context memory`. Each layer builds on the one before. Soul is the foundation; context memory is the most recent and specific. Layers are separated by `\n\n---\n\n`.
+**Composition order** — `soul → identity → growth → bedrock → user → global memory → context memory → temporal context`. Each layer builds on the one before. Soul is the foundation; temporal context is appended last so Ellis always knows what time it is for Daniel. Layers are separated by `\n\n---\n\n`.
 
 **`readFile(path)`** — returns the file contents trimmed, or `null` if the file doesn't exist or is empty. Many files won't exist at various points (`user.md` starts empty, `growth.md` doesn't exist until The Familiar first reflects). Missing files are silently omitted from the prompt rather than crashing.
 
@@ -139,7 +157,9 @@ Reads all persona files and composes them into the system prompt string sent to 
 
 **Type guard** — `.filter((s): s is string => s !== null)` filters out nulls and simultaneously narrows the TypeScript type from `(string | null)[]` to `string[]`. Without the `s is string` annotation, TypeScript wouldn't trust that the filtered array contains only strings.
 
-**`buildCacheablePrefix()`** — a second export that reads only `soul.md` and `identity.md`. These two files change rarely (soul is immutable; identity changes only by deliberate decision). They are the stable part of the system prompt and the only part safe to cache at the API level. Growth, bedrock, user, and memory are dynamic — they must not be cached. Callers that want caching call both functions and pass the results separately to the router.
+**`buildCacheablePrefix()`** — a second export that reads only `soul.md` and `identity.md`. These two files change rarely (soul is immutable; identity changes only by deliberate decision). They are the stable part of the system prompt and the only part safe to cache at the API level. Growth, bedrock, user, memory, and temporal context are dynamic — they must not be cached. Callers that want caching call both functions and pass the results separately to the router.
+
+**`buildTemporalContext()`** — returns a short string with Daniel's current local time, derived from `DANIEL_TIMEZONE` using Node's built-in `Intl` API. Appended to every system prompt. No library needed — `toLocaleString` with a timezone option handles formatting. The result lands in the dynamic (non-cached) portion of the prompt so it reflects the actual current time on each call.
 
 ---
 
@@ -221,14 +241,21 @@ Parks requests that don't need an immediate response, waits for local Ollama to 
 
 The public face of the LLM layer. Everything else in the codebase calls `route(request)` and gets back a response — all routing complexity is hidden inside.
 
-**Also defines all shared LLM types:** `LLMRequest`, `LLMResponse`, `Message`, `RequestType`, `ModelTier`. Keeping types here (not in a separate file) is intentional — at this scale a types file would just be extra indirection.
+**Also defines all shared LLM types:** `LLMRequest`, `LLMResponse`, `Message`, `ContentBlock`, `RequestType`, `ModelTier`. Keeping types here (not in a separate file) is intentional — at this scale a types file would just be extra indirection.
+
+**`ContentBlock`** — a discriminated union (`{ type: 'text'; text: string } | { type: 'image'; source: ... }`) representing a single block in a multi-part message. `Message.content` is `string | ContentBlock[]`, allowing both plain text and image-containing messages to flow through the same type. Ollama doesn't support images, so `toTextMessages()` strips image blocks down to text before any local routing call.
+
+**`hasImage` on `LLMRequest`** — when set, the router skips all local routing logic and goes straight to Claude cloud, bumping the tier from economy to balanced minimum. Haiku's vision capability is too weak to be useful.
+
+**`toTextMessages()`** — extracts plain text from `Message[]` for Ollama-bound calls (meta-router, queue). Filters content blocks for `type === 'text'` and joins them. Image-only messages become empty strings — in practice this path is never reached since image requests are intercepted by the `hasImage` guard first.
 
 **Routing logic flow:**
 1. Load config from `config/llm.json`
 2. Meta-router suggests a tier (falls back to config default if unavailable or fails)
 3. `familiarPreference` can override the tier up (`quality`) or down (`economy`)
-4. If `urgency: immediate` or `allow_local: false` → straight to Claude cloud
-5. Otherwise → try PC Ollama first for reflection/internal (70B), fall back to Mini (3B), enqueue if unavailable, fall back to cloud on timeout
+4. If `hasImage` → force cloud, minimum balanced tier, return immediately
+5. If `urgency: immediate` or `allow_local: false` → straight to Claude cloud
+6. Otherwise → try PC Ollama first for reflection/internal (70B), fall back to Mini (3B), enqueue if unavailable, fall back to cloud on timeout
 
 **`loadConfig()` on every call** — re-reads the JSON file each time. This means editing `config/llm.json` takes effect on the next request without restarting the process. The file is tiny and OS-cached so the overhead is negligible.
 
@@ -246,15 +273,21 @@ Each routing entry specifies the default tier, urgency, whether local is allowed
 
 ---
 
-## `src/channels/telegram.ts` (updated)
+## `src/channels/telegram.ts`
 
-Updated from the original to support proactive reach-outs from the heartbeat.
+Grammy implementation of `Channel`. The only place in the codebase that knows about Telegram.
 
-**`bot` at module level** — moved out of the class so `notifyDaniel` can use it. The class still exists to satisfy the `Channel` interface.
+**`bot` at module level** — outside the class so `notifyDaniel` can use it for proactive reach-outs.
 
-**`chatId`** — captured from the first incoming message (`ctx.chat.id`) and stored in memory. Used by `notifyDaniel` for proactive messages. If a reach-out fires before Daniel has sent any message, it fails silently with a warning log. For a personal always-on bot, this is acceptable — the chat ID will be available after the first interaction.
+**`chatId`** — captured from every incoming message (`ctx.chat.id`) and stored in memory. Used by `notifyDaniel`. If a reach-out fires before Daniel has sent any message, it fails silently with a warning log — acceptable for a personal always-on bot.
 
-**`notifyDaniel(text)`** — exported function called by the heartbeat when The Familiar wants to reach out. Grammy's `bot.api.sendMessage()` sends a message proactively without an incoming message to reply to.
+**`sendReply(ctx, response)`** — shared helper for both text and photo handlers. Splits responses longer than 4096 characters (Telegram's maximum) into multiple messages.
+
+**`downloadPhoto(ctx)`** — fetches the highest-resolution version of an incoming photo from Telegram's file API, converts it to a base64 string, and returns it. Highest resolution is always last in Telegram's `photo` array. Returns `null` on any failure.
+
+**Two event handlers** — `message:text` for plain text, `message:photo` for images (sent as compressed JPEG). Photo messages call the handler with `(caption, imageBase64)`. Uncompressed images sent as documents are not handled in v1.
+
+**`notifyDaniel(text)`** — exported function called by the heartbeat for proactive messages. Uses Grammy's `bot.api.sendMessage()` without an incoming context.
 
 ---
 
@@ -266,11 +299,13 @@ A thin re-export of the DB flag functions. Exists for separation of concerns —
 
 ## `src/heartbeat/post-processor.ts`
 
-Runs after every conversation closes. Uses the Mini's 1B model to classify significance and add flags for the pulse queue.
+Runs after every conversation closes. Uses the Mini's 3B model to classify significance and add flags for the pulse queue.
 
-**Significance scale** — `none`, `notable`, `significant`, `very_significant`. Only the latter two produce flags. `very_significant` produces both a reflection and a bedrock flag.
+**Significance scale** — `none`, `notable`, `significant`, `very_significant`. Only `significant` and `very_significant` produce flags. `significant` adds a `reflection` flag. `very_significant` adds both a `reflection` and a `bedrock` flag. `notable` triggers a user memory update without flagging.
 
-**Transcript truncated** — messages are capped at 500 characters before being sent to the local model. The 1B model doesn't need (and may struggle with) full message content — the gist is enough for significance classification.
+**Flag summaries are 2-3 sentences** — enough substance for Claude to write a meaningful reflection hours later when the flag is consumed. A one-sentence summary was too thin.
+
+**`updateUserMemory()`** — triggered for notable+ conversations. Routes as `memory_update` (queued, local preferred) and overwrites `user.md` with an updated profile. Image messages are stored in the DB as `[image]\n{caption}` placeholders — the post-processor sees and assesses these placeholders, not base64 data.
 
 **Fail gracefully** — if local model is unavailable or the JSON parse fails, the function logs and returns without crashing. A missed assessment is fine.
 
@@ -290,11 +325,17 @@ The regular pulse — fires every 2–5 hours.
 
 **Randomised `setTimeout` not `setInterval`** — `setTimeout` is rescheduled after each pulse completes. `setInterval` fires on a fixed wall-clock schedule regardless of how long work takes. `setTimeout` + reschedule means: the next interval is always relative to when the current pulse finished, and the random delay is freshly drawn each time.
 
-**Response markers** — The Familiar uses `REFLECTION:` / `/REFLECTION` and `MESSAGE:` / `/MESSAGE` to signal intent. Everything outside the markers is ignored — The Familiar can think freely, only marked sections are acted on. Regex captures everything between the opening and closing marker (or to end of string if closing marker is absent).
+**Flag types are separated** — `getPendingFlags()` returns all unsurfaced flags; the pulse filters these to `reflection` type only. `bedrock` flags are left untouched for the bedrock pulse to consume. This separation means the two pulse types don't compete for the same flags.
 
-**Flags fetched once** — `getPendingFlags()` runs at the start. The same slice is used to build context and to mark as surfaced at the end. Flags are only marked surfaced if the pulse succeeds — if the LLM call throws, flags stay unsurfaced and reappear at the next pulse.
+**Decision** — a local 3B model is given the pulse context (current time, time since last reflection/reach-out, pending flag summaries) and returns `{ reflect, reach_out }`. If reflection flags are pending, the decision defaults to `reflect: true` even if the model fails or returns nonsense — flags are a strong signal.
 
-**growth.md appending** — reflection entries are appended with a date header (`## YYYY-MM-DD`). The file is read, extended in memory, and written back atomically with `writeFileSync`.
+**Quiet hours guard** — `isQuietHours()` checks the current hour in Daniel's timezone (`DANIEL_TIMEZONE`) against `QUIET_HOURS_START` / `QUIET_HOURS_END`. Handles midnight-spanning ranges correctly (`hour >= 22 || hour < 8`). This runs before the try block — it's a hard guardrail, not model judgment.
+
+**Two distinct prompts** — reflection and reach-out use different framing. The reflection prompt makes the flag summaries the explicit subject ("something has been on your mind"). The reach-out prompt frames from wanting to connect. They're not the same "quiet moment" template.
+
+**Flags only consumed on success** — `reflectionFlags.forEach(f => markFlagSurfaced(f.id))` only runs if content was actually written to `growth.md`. If the LLM returns "nothing" or throws, flags stay unsurfaced and reappear at the next pulse.
+
+**growth.md appending** — reflection entries are appended with a date header (`## YYYY-MM-DD`). The file is read, extended in memory, and written back with `writeFileSync`.
 
 ---
 
@@ -303,10 +344,12 @@ The regular pulse — fires every 2–5 hours.
 Fires roughly every 10–20 days. Rarer and more serious than the regular pulse.
 
 **Two-phase design:**
-1. Local 3B model reads `growth.md` and surfaces candidates (opinions that appear repeatedly, positions held under challenge). Uses 3B rather than 1B for better reading comprehension.
+1. Local 3B model reads `growth.md` and any pending `bedrock` flags, surfaces candidates (opinions that appear repeatedly, positions held under challenge, conversations explicitly flagged as bedrock-worthy).
 2. The Familiar receives those candidates and decides. If nothing stands out, the pulse passes silently.
 
-**`BEDROCK:` marker** — The Familiar uses the same marker convention as the regular pulse. If the marker is present, the content is encoded and appended to `bedrock.md`.
+**Bedrock flags** — the post-processor adds `bedrock` flags for `very_significant` conversations. The bedrock pulse reads and incorporates these alongside the growth.md scan, giving it a richer signal. Flags are marked surfaced after the pulse regardless of whether anything was encoded — they've been considered.
+
+**`BEDROCK:` marker** — The Familiar uses a structured marker in its response. If `BEDROCK:\n...\n/BEDROCK` is present, the content is encoded and appended to `bedrock.md`.
 
 **Encoding on append** — the cipher is character-by-character and stateless. `encode(A) + encode(B) = encode(A + B)`, so appending independently-encoded entries is safe. `persona.ts` decodes the whole file at once and recovers the full plain text correctly.
 
@@ -319,22 +362,26 @@ Fires roughly every 10–20 days. Rarer and more serious than the regular pulse.
 The entry point. No logic — purely wiring. Everything has already been built in isolation; this is where it connects.
 
 **Startup sequence:**
-1. `import './channels/index.js'` — side-effect import that triggers channel registration
-2. The DB is already initialised by this point (tables created when `db.ts` was first imported)
-3. `handleMessage` is defined — the core conversation loop
-4. `getChannels()` returns the registered channels; each is started with `handleMessage` as the handler
-5. `startPulse()` and `startBedrockPulse()` begin the heartbeat schedulers
+1. `verifySoulIntegrity()` — runs first, before anything else. Halts if `soul.md` has drifted.
+2. `import './channels/index.js'` — side-effect import that triggers channel registration
+3. The DB is already initialised by this point (tables created when `db.ts` was first imported)
+4. `handleMessage` is defined — the core conversation loop
+5. `getChannels()` returns the registered channels; each is started with `handleMessage` as the handler
+6. `startPulse()` and `startBedrockPulse()` begin the heartbeat schedulers
 
-**`handleMessage`** — the conversation loop:
-1. Save incoming message to DB
-2. Fetch up to 50 recent messages as history
-3. Build the cacheable prefix (soul + identity) and the full system prompt separately
-4. Route to LLM, passing both — the router threads the prefix through to Claude for server-side caching
-5. Save response to DB
-6. Append exchange to today's session log file
-7. Fire post-processor asynchronously and return the response
+**`handleMessage(text, imageBase64?)`** — the conversation loop:
+1. Store to DB — image messages stored as `[image]` or `[image]\n{caption}` placeholder, never base64
+2. Fetch history from DB, exclude the just-stored message
+3. Build the current message: plain string for text, `ContentBlock[]` for images
+4. Build cacheable prefix (soul + identity) and full system prompt separately
+5. Route to LLM — `hasImage: true` forces cloud and upgrades economy tier
+6. Save response to DB
+7. Append exchange to today's session log (using text placeholder, not base64)
+8. Fire post-processor with text-only messages (no base64 blobs in assessment)
 
-**`appendToSessionLog`** — inline function that writes each exchange to `contexts/personal/memory/YYYY-MM-DD.md`. Creates the directory and file if they don't exist. Each entry has a `### HH:MM` timestamp header followed by the user and assistant turns. These files are git-crypt encrypted (they fall under `contexts/**`) so conversation content stays private in the repo.
+**Why history is fetched before appending the current message as content blocks** — the DB stores a text placeholder for image messages (suitable for history/transcripts), but the actual Claude call needs the real content blocks. So history is fetched as-is, the current message is appended separately with its proper content, and the two are combined into the `messages` array sent to the router.
+
+**`appendToSessionLog`** — writes each exchange to `contexts/personal/memory/YYYY-MM-DD.md`. Creates the directory and file if they don't exist. Each entry has a `### HH:MM` timestamp header. These files are git-crypt encrypted (under `contexts/**`) so conversation content stays private in the repo.
 
 **`assessConversation` is fire-and-forget** — not awaited. The user gets their reply immediately; significance assessment happens in the background. Errors are logged and swallowed — a failed assessment never surfaces to the user.
 
@@ -346,7 +393,7 @@ The entry point. No logic — purely wiring. Everything has already been built i
 
 Defines what a channel is and keeps a list of registered channels.
 
-**`MessageHandler`** — a function that takes incoming message text and returns The Familiar's response. This is the contract between channels and the rest of the system. Channels don't know about LLMs or personas — they receive the handler from outside (from `index.ts` at startup). Inversion of control: the channel shuttles messages, it doesn't decide what to do with them.
+**`MessageHandler`** — `(text: string, imageBase64?: string) => Promise<string>`. Takes incoming text (and an optional base64 image) and returns The Familiar's response. This is the contract between channels and the rest of the system. Channels don't know about LLMs or personas — they receive the handler from outside (from `index.ts` at startup). Inversion of control: the channel shuttles messages, it doesn't decide what to do with them.
 
 **`Channel` interface** — a single method `start(handler)`. Every channel must implement this. Keeps the registry generic — Telegram, a future WhatsApp implementation, a CLI test harness all look the same to the rest of the codebase.
 
