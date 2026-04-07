@@ -39,8 +39,11 @@ function requireEnv(name: string): string {
 }
 
 export const env = {
-  ANTHROPIC_API_KEY:  requireEnv('ANTHROPIC_API_KEY'),
-  TELEGRAM_BOT_TOKEN: requireEnv('TELEGRAM_BOT_TOKEN'),
-  OLLAMA_BASE_URL:    process.env['OLLAMA_BASE_URL']    ?? 'http://localhost:11434',
-  OLLAMA_PC_BASE_URL: process.env['OLLAMA_PC_BASE_URL'] ?? null,
+  ANTHROPIC_API_KEY:   requireEnv('ANTHROPIC_API_KEY'),
+  TELEGRAM_BOT_TOKEN:  requireEnv('TELEGRAM_BOT_TOKEN'),
+  OLLAMA_BASE_URL:     process.env['OLLAMA_BASE_URL']     ?? 'http://localhost:11434',
+  OLLAMA_PC_BASE_URL:  process.env['OLLAMA_PC_BASE_URL']  ?? null,
+  DANIEL_TIMEZONE:     process.env['DANIEL_TIMEZONE']     ?? 'Australia/Sydney',
+  QUIET_HOURS_START:   parseInt(process.env['QUIET_HOURS_START'] ?? '22', 10),
+  QUIET_HOURS_END:     parseInt(process.env['QUIET_HOURS_END']   ?? '8',  10),
 }

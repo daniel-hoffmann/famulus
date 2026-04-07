@@ -1,12 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { env } from '../../config.js'
 
+// Mirrors router.ts ContentBlock — kept separate to avoid circular imports.
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } }
+
 export interface ProviderRequest {
   model: string
   systemPrompt: string
   cacheablePrefix?: string
   webSearch?: boolean
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  messages: Array<{ role: 'user' | 'assistant'; content: string | ContentBlock[] }>
 }
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
@@ -25,7 +30,7 @@ export async function callClaude(req: ProviderRequest): Promise<string> {
     model: req.model,
     max_tokens: 8192,
     system,
-    messages: req.messages,
+    messages: req.messages as Anthropic.MessageParam[],
     ...(req.webSearch ? { tools: [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }] } : {}),
   })
 

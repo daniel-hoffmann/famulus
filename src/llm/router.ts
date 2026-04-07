@@ -18,9 +18,13 @@ export type RequestType =
 
 export type ModelTier = 'economy' | 'balanced' | 'quality'
 
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg'; data: string } }
+
 export interface Message {
   role: 'user' | 'assistant'
-  content: string
+  content: string | ContentBlock[]
 }
 
 export interface LLMRequest {
@@ -29,6 +33,7 @@ export interface LLMRequest {
   systemPrompt: string
   cacheablePrefix?: string
   webSearch?: boolean
+  hasImage?: boolean
   messages: Message[]
   familiarPreference?: 'local' | 'quality' | 'economy'
 }
@@ -63,6 +68,16 @@ function loadConfig(): LLMConfig {
   return JSON.parse(readFileSync(LLM_CONFIG_PATH, 'utf8')) as LLMConfig
 }
 
+// Ollama doesn't support images — extract plain text from messages for local routing
+function toTextMessages(messages: Message[]): Array<{ role: 'user' | 'assistant'; content: string }> {
+  return messages.map(m => ({
+    role: m.role,
+    content: typeof m.content === 'string'
+      ? m.content
+      : m.content.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map(b => b.text).join(''),
+  }))
+}
+
 // --- Router ---
 
 export async function route(request: LLMRequest): Promise<LLMResponse> {
@@ -76,7 +91,7 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
   if (config.meta_router.enabled) {
     const metaTier = await getMetaTier(
       request.type,
-      request.messages,
+      toTextMessages(request.messages),
       config.meta_router.model,
       config.providers.ollama_mini.base_url
     )
@@ -85,6 +100,15 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
 
   if (request.familiarPreference === 'quality') tier = 'quality'
   if (request.familiarPreference === 'economy') tier = 'economy'
+
+  // Images require cloud — Haiku vision is too weak, minimum Sonnet
+  if (request.hasImage) {
+    if (tier === 'economy') tier = 'balanced'
+    const model = config.providers.claude.models[tier]
+    logger.info({ type: request.type, model, provider: 'claude' }, 'llm request')
+    const content = await callClaude({ model, systemPrompt: request.systemPrompt, cacheablePrefix: request.cacheablePrefix, webSearch: request.webSearch, messages: request.messages })
+    return { content, model, provider: 'claude' }
+  }
 
   // Immediate or local not allowed → Claude cloud
   if (rule.urgency === 'immediate' || !rule.allow_local) {
@@ -120,7 +144,7 @@ export async function route(request: LLMRequest): Promise<LLMResponse> {
 
   logger.info({ type: request.type, model: localModel, provider: 'ollama' }, 'llm request')
   const content = await enqueue(
-    { systemPrompt: request.systemPrompt, messages: request.messages },
+    { systemPrompt: request.systemPrompt, messages: toTextMessages(request.messages) },
     { localModel, localBaseUrl, timeoutMs, fallback }
   )
   return { content, model: localModel, provider: 'ollama' }

@@ -11,11 +11,23 @@ import { startBedrockPulse } from './heartbeat/bedrock-pulse.js'
 import { log } from './logger.js'
 import { SESSION_LOG_DIR } from './config.js'
 
-async function handleMessage(text: string): Promise<string> {
-  addMessage('personal', 'user', text)
+async function handleMessage(text: string, imageBase64?: string): Promise<string> {
+  // Store a text representation in the DB — history and post-processor work with text only
+  const storedContent = imageBase64 ? (text ? `[image]\n${text}` : '[image]') : text
+  addMessage('personal', 'user', storedContent)
 
+  // Build history without the just-stored message, then append with proper content blocks
   const history = getRecentMessages('personal', 50)
-  const messages: Message[] = history.map(m => ({ role: m.role, content: m.content }))
+  const historyMessages: Message[] = history.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
+
+  const currentContent: Message['content'] = imageBase64
+    ? [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+        ...(text ? [{ type: 'text' as const, text }] : []),
+      ]
+    : text
+
+  const messages: Message[] = [...historyMessages, { role: 'user', content: currentContent }]
 
   const cacheablePrefix = buildCacheablePrefix()
   const systemPrompt = buildSystemPrompt()
@@ -26,15 +38,20 @@ async function handleMessage(text: string): Promise<string> {
     cacheablePrefix,
     systemPrompt,
     webSearch: true,
+    hasImage: !!imageBase64,
     messages,
   })
 
   addMessage('personal', 'assistant', response.content)
-  appendToSessionLog(text, response.content)
+  appendToSessionLog(storedContent, response.content)
 
-  // Assess significance asynchronously — don't block the reply
-  const fullMessages: Message[] = [...messages, { role: 'assistant', content: response.content }]
-  assessConversation(fullMessages).catch(err => log.error({ err }, 'post-processor error'))
+  // Post-processor gets text-only messages — no base64 blobs in assessment
+  const assessMessages: Message[] = [
+    ...historyMessages,
+    { role: 'user', content: storedContent },
+    { role: 'assistant', content: response.content },
+  ]
+  assessConversation(assessMessages).catch(err => log.error({ err }, 'post-processor error'))
 
   return response.content
 }

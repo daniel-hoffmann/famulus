@@ -8,6 +8,7 @@ import {
   USER_PATH,
   GLOBAL_MEMORY_PATH,
   CONTEXTS_DIR,
+  env,
 } from './config.js'
 import { decode } from './cipher/index.js'
 
@@ -16,6 +17,23 @@ function readFile(filePath: string): string | null {
   if (!existsSync(filePath)) return null
   const content = readFileSync(filePath, 'utf8').trim()
   return content || null
+}
+
+// Returns the current local time in Daniel's timezone as a short context string
+export function buildTemporalContext(): string {
+  const now = new Date()
+  const formatted = now.toLocaleString('en-AU', {
+    timeZone: env.DANIEL_TIMEZONE,
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  })
+  return `Daniel's current time: ${formatted}`
 }
 
 // The stable prefix — soul + identity only. Changes rarely, safe to cache.
@@ -43,7 +61,9 @@ export function buildSystemPrompt(contextFolder = 'personal'): string {
   const globalMemory = readFile(GLOBAL_MEMORY_PATH)
   const contextMemory = readFile(join(CONTEXTS_DIR, contextFolder, 'memory.md'))
 
-  return [soul, identity, growth, bedrock, user, globalMemory, contextMemory]
+  const temporalContext = buildTemporalContext()
+
+  return [soul, identity, growth, bedrock, user, globalMemory, contextMemory, temporalContext]
     .filter((s): s is string => s !== null)
     .join('\n\n---\n\n')
 }

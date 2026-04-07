@@ -7,6 +7,7 @@ import { observeRegularPulse } from './observer.js'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { notifyDaniel } from '../channels/telegram.js'
 import { GROWTH_PATH, env } from '../config.js'
+import { buildTemporalContext } from '../persona.js'
 import { addMessage } from '../db.js'
 import { log, verboseLog } from '../logger.js'
 
@@ -24,11 +25,22 @@ function getReflectionFlags(flags: PendingFlag[]): PendingFlag[] {
   return flags.filter(f => f.flag_type === 'reflection')
 }
 
+function isQuietHours(): boolean {
+  const hour = parseInt(
+    new Date().toLocaleString('en-AU', { timeZone: env.DANIEL_TIMEZONE, hour: 'numeric', hour12: false }),
+    10
+  )
+  const { QUIET_HOURS_START: start, QUIET_HOURS_END: end } = env
+  // Handles midnight-spanning range (e.g. 22–8)
+  return start > end ? (hour >= start || hour < end) : (hour >= start && hour < end)
+}
+
 function buildContext(reflectionFlags: PendingFlag[]): string {
   const lastReflection = getLastOutcomeTime('reflection%')
   const lastReachOut = getLastOutcomeTime('reach_out%')
 
-  let context = `Last reflection: ${hoursSince(lastReflection)}\n`
+  let context = buildTemporalContext() + '\n'
+  context += `Last reflection: ${hoursSince(lastReflection)}\n`
   context += `Last reach-out: ${hoursSince(lastReachOut)}\n`
 
   if (reflectionFlags.length > 0) {
@@ -86,7 +98,14 @@ async function runPulse(): Promise<void> {
 
   verboseLog.info({ pendingFlags: allFlags.length, reflectionFlags: reflectionFlags.length }, 'heartbeat: pulse context')
 
-  const { reflect, reachOut } = await makeDecision(context, reflectionFlags.length > 0)
+  const decision = await makeDecision(context, reflectionFlags.length > 0)
+  let { reflect, reachOut } = decision
+
+  // Hard guardrail — no reach-outs during quiet hours regardless of decision
+  if (reachOut && isQuietHours()) {
+    log.info('heartbeat: reach-out suppressed — quiet hours')
+    reachOut = false
+  }
 
   verboseLog.info({ reflect, reachOut }, 'heartbeat: pulse decision')
 
