@@ -25,7 +25,7 @@ export async function assessConversation(messages: Message[]): Promise<void> {
     `Transcript:\n${transcript}\n\n` +
     `Signals: emotional weight, unresolved tensions, new positions taken, ` +
     `disagreements that landed, something being worked through, complexity.\n\n` +
-    `JSON only: {"significance":"none"|"notable"|"significant"|"very_significant","summary":"one sentence"}`
+    `JSON only: {"significance":"none"|"notable"|"significant"|"very_significant","summary":"two or three sentences capturing what happened and why it matters"}`
 
   try {
     const raw = await callOllama(

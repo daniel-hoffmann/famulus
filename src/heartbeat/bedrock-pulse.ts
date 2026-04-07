@@ -4,6 +4,7 @@ import { buildSystemPrompt } from '../persona.js'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { encode } from '../cipher/index.js'
 import { observeBedrockPulse } from './observer.js'
+import { getPendingFlags, markFlagSurfaced } from './queue.js'
 import { GROWTH_PATH, BEDROCK_PATH, env } from '../config.js'
 import { log, verboseLog } from '../logger.js'
 
@@ -11,21 +12,33 @@ const CANDIDATE_MODEL = 'llama3.2:3b'  // more capable than 1B for reading growt
 const BEDROCK_MIN_DAYS = 10
 const BEDROCK_MAX_DAYS = 20
 
-// Use the local model to read growth.md and surface candidates for bedrock
-async function identifyCandidates(): Promise<string | null> {
-  if (!existsSync(GROWTH_PATH)) return null
-  const growth = readFileSync(GROWTH_PATH, 'utf8').trim()
-  if (!growth) return null
+// Use the local model to read growth.md and surface candidates for bedrock.
+// Also incorporates any conversations explicitly flagged for bedrock consideration.
+async function identifyCandidates(bedrockFlagSummaries: string[]): Promise<string | null> {
+  const growth = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8').trim() : ''
 
   const baseUrl = env.OLLAMA_BASE_URL
   if (!await isOllamaAvailable(baseUrl)) return null
 
-  const prompt =
+  // If there are no flags and no growth content, nothing to consider
+  if (!growth && bedrockFlagSummaries.length === 0) return null
+
+  let prompt =
     `Read this growth record and identify convictions that may deserve a place in bedrock — earned, load-bearing positions.\n\n` +
     `Look for: opinions that appear repeatedly, positions held under challenge, ` +
-    `things returned to without prompting.\n\n` +
-    `${growth}\n\n` +
-    `List the candidates briefly. If nothing stands out, respond with exactly: none`
+    `things returned to without prompting.\n\n`
+
+  if (growth) {
+    prompt += `Growth record:\n${growth}\n\n`
+  }
+
+  if (bedrockFlagSummaries.length > 0) {
+    prompt +=
+      `These conversations were recently flagged as potentially bedrock-worthy:\n` +
+      bedrockFlagSummaries.map(s => `- ${s}`).join('\n') + `\n\n`
+  }
+
+  prompt += `List the candidates briefly. If nothing stands out, respond with exactly: none`
 
   try {
     const raw = await callOllama(
@@ -41,8 +54,13 @@ async function identifyCandidates(): Promise<string | null> {
 async function runBedrockPulse(): Promise<void> {
   log.info('heartbeat: bedrock pulse firing')
 
-  const candidates = await identifyCandidates()
-  verboseLog.info({ candidatesFound: !!candidates }, 'heartbeat: bedrock candidates assessed')
+  // Read and consume any pending bedrock flags
+  const allFlags = getPendingFlags()
+  const bedrockFlags = allFlags.filter(f => f.flag_type === 'bedrock')
+  const bedrockFlagSummaries = bedrockFlags.map(f => f.summary)
+
+  const candidates = await identifyCandidates(bedrockFlagSummaries)
+  verboseLog.info({ candidatesFound: !!candidates, bedrockFlags: bedrockFlags.length }, 'heartbeat: bedrock candidates assessed')
   const systemPrompt = buildSystemPrompt()
 
   const pulseMessage = candidates
@@ -81,6 +99,9 @@ async function runBedrockPulse(): Promise<void> {
   } catch (err) {
     log.error({ err }, 'heartbeat: bedrock pulse failed')
   }
+
+  // Mark bedrock flags surfaced regardless of outcome — they've been considered
+  bedrockFlags.forEach(f => markFlagSurfaced(f.id))
 
   observeBedrockPulse(encoded)
 }
