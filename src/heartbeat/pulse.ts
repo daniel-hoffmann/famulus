@@ -37,7 +37,7 @@ function isQuietHours(): boolean {
 
 function buildContext(reflectionFlags: PendingFlag[]): string {
   const lastReflection = getLastOutcomeTime('reflection%')
-  const lastReachOut = getLastOutcomeTime('reach_out%')
+  const lastReachOut = getLastOutcomeTime('%reach_out%')
 
   let context = buildTemporalContext() + '\n'
   context += `Last reflection: ${hoursSince(lastReflection)}\n`
@@ -149,8 +149,8 @@ async function runPulse(): Promise<void> {
     if (reachOut) {
       const flagLines = reflectionFlags.map(f => `- ${f.summary}`).join('\n')
       const reachOutPrompt = reflectionFlags.length > 0
-        ? `Something is pulling you toward reaching out to Daniel.\n\nWhat's been on your mind:\n${flagLines}\n\nWrite your message to him. Be yourself.`
-        : `You feel like reaching out to Daniel. It's been a while.\n\nWrite your message to him. Be yourself.`
+        ? `Something from a recent conversation has been with you:\n${flagLines}\n\nWrite a message to Daniel. Your voice, your words.`
+        : `It's been a while since you've spoken with Daniel. Write him a message — something genuine, something from you.`
 
       // Claude composes the actual message
       const reachOutResponse = await route({
@@ -159,10 +159,19 @@ async function runPulse(): Promise<void> {
         systemPrompt,
         messages: [{ role: 'user', content: reachOutPrompt }],
       })
-      verboseLog.info({ excerpt: reachOutResponse.content.slice(0, 120) }, 'heartbeat: reach_out composed')
-      await notifyDaniel(reachOutResponse.content)
-      addMessage('personal', 'assistant', reachOutResponse.content)
-      reachedOut = true
+      const reachOutContent = reachOutResponse.content.trim()
+
+      // Sanity check — if the response is meta-commentary rather than a message, discard it
+      const metaMarkers = ['this prompt', 'the framing', 'i notice it', 'push back on', 'performing a']
+      const isMetaCommentary = metaMarkers.some(m => reachOutContent.toLowerCase().includes(m))
+      if (isMetaCommentary || reachOutContent.length < 20) {
+        log.warn({ excerpt: reachOutContent.slice(0, 120) }, 'heartbeat: reach_out discarded — looks like meta-commentary')
+      } else {
+        verboseLog.info({ excerpt: reachOutContent.slice(0, 120) }, 'heartbeat: reach_out composed')
+        await notifyDaniel(reachOutContent)
+        addMessage('personal', 'assistant', reachOutContent)
+        reachedOut = true
+      }
     }
   } catch (err) {
     log.error({ err }, 'heartbeat: pulse failed')

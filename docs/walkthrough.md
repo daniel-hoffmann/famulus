@@ -213,7 +213,9 @@ Raw `fetch` Ollama wrapper. No client library needed — Ollama's API is simple 
 
 ## `src/llm/meta.ts`
 
-Uses the local 3B model to dynamically pick a tier for each request based on actual conversation content.
+Uses the local 3B model to dynamically pick a tier for each request based on actual conversation content. Currently disabled via `meta_router.enabled: false` in `config/llm.json`.
+
+**Why disabled** — the meta-router can downgrade as well as upgrade. A 3B model is not reliable enough to make tier decisions for consequential calls like bedrock writing or memory updates. The config defaults are well-reasoned and more trustworthy. Can be re-enabled for experimentation with a more capable local model.
 
 **`import type`** — imports `ModelTier` and `RequestType` as type-only. These are erased before the code runs, so at runtime `meta.ts` has zero dependency on `router.ts`. This avoids a circular dependency (router imports meta, meta would import router).
 
@@ -251,11 +253,11 @@ The public face of the LLM layer. Everything else in the codebase calls `route(r
 
 **Routing logic flow:**
 1. Load config from `config/llm.json`
-2. Meta-router suggests a tier (falls back to config default if unavailable or fails)
+2. Meta-router suggests a tier if enabled (falls back to config default if disabled, unavailable, or fails)
 3. `familiarPreference` can override the tier up (`quality`) or down (`economy`)
 4. If `hasImage` → force cloud, minimum balanced tier, return immediately
 5. If `urgency: immediate` or `allow_local: false` → straight to Claude cloud
-6. Otherwise → try PC Ollama first for reflection/internal (70B), fall back to Mini (3B), enqueue if unavailable, fall back to cloud on timeout
+6. Otherwise → try local Ollama, enqueue if unavailable, fall back to cloud on timeout (PC routing is currently disabled)
 
 **`loadConfig()` on every call** — re-reads the JSON file each time. This means editing `config/llm.json` takes effect on the next request without restarting the process. The file is tiny and OS-cached so the overhead is negligible.
 
@@ -287,7 +289,7 @@ Grammy implementation of `Channel`. The only place in the codebase that knows ab
 
 **Two event handlers** — `message:text` for plain text, `message:photo` for images (sent as compressed JPEG). Photo messages call the handler with `(caption, imageBase64)`. Uncompressed images sent as documents are not handled in v1.
 
-**`notifyDaniel(text)`** — exported function called by the heartbeat for proactive messages. Uses Grammy's `bot.api.sendMessage()` without an incoming context.
+**`notifyDaniel(text)`** — exported function called by the heartbeat for proactive messages. Uses Grammy's `bot.api.sendMessage()` without an incoming context. Chunks messages longer than 4096 characters, matching the same limit applied in `sendReply`.
 
 ---
 
@@ -299,15 +301,17 @@ A thin re-export of the DB flag functions. Exists for separation of concerns —
 
 ## `src/heartbeat/post-processor.ts`
 
-Runs after every conversation closes. Uses the Mini's 3B model to classify significance and add flags for the pulse queue.
+Runs after every conversation closes. Uses Claude Haiku to classify significance and add flags for the pulse queue.
 
 **Significance scale** — `none`, `notable`, `significant`, `very_significant`. Only `significant` and `very_significant` produce flags. `significant` adds a `reflection` flag. `very_significant` adds both a `reflection` and a `bedrock` flag. `notable` triggers a user memory update without flagging.
 
 **Flag summaries are 2-3 sentences** — enough substance for Claude to write a meaningful reflection hours later when the flag is consumed. A one-sentence summary was too thin.
 
-**`updateUserMemory()`** — triggered for notable+ conversations. Routes as `memory_update` (queued, local preferred) and overwrites `user.md` with an updated profile. Image messages are stored in the DB as `[image]\n{caption}` placeholders — the post-processor sees and assesses these placeholders, not base64 data.
+**Why Haiku for assessment** — assessment runs after every exchange including trivial ones, so economy tier is appropriate. Haiku is substantially more reliable than a 3B model for classification and summarisation, and the async nature means there's no latency impact on Daniel's replies. Assessment always runs — there's no Ollama availability check to skip it.
 
-**Fail gracefully** — if local model is unavailable or the JSON parse fails, the function logs and returns without crashing. A missed assessment is fine.
+**`updateUserMemory()`** — triggered for notable+ conversations. Routes as `memory_update` (queued, Sonnet) and overwrites `user.md` with an updated profile. Ellis's full system prompt is passed so the profile reflects Ellis's perspective on what's worth knowing — not just generic fact extraction. Image messages are stored in the DB as `[image]\n{caption}` placeholders — the post-processor sees and assesses these placeholders, not base64 data.
+
+**Fail gracefully** — if the JSON parse fails or the route call throws, the function logs and returns without crashing. A missed assessment is acceptable.
 
 ---
 
@@ -331,7 +335,11 @@ The regular pulse — fires every 2–5 hours.
 
 **Quiet hours guard** — `isQuietHours()` checks the current hour in Daniel's timezone (`DANIEL_TIMEZONE`) against `QUIET_HOURS_START` / `QUIET_HOURS_END`. Handles midnight-spanning ranges correctly (`hour >= 22 || hour < 8`). This runs before the try block — it's a hard guardrail, not model judgment.
 
-**Two distinct prompts** — reflection and reach-out use different framing. The reflection prompt makes the flag summaries the explicit subject ("something has been on your mind"). The reach-out prompt frames from wanting to connect. They're not the same "quiet moment" template.
+**Two distinct prompts** — reflection and reach-out use different framing. The reflection prompt makes the flag summaries the explicit subject ("something has been on your mind"). The reach-out prompt is task-oriented ("write a message to Daniel") rather than experiential — framing like "you feel like reaching out" caused Claude to write meta-commentary about the prompt instead of an actual message.
+
+**Reach-out guard** — before sending, the composed message is checked for meta-commentary markers (`"this prompt"`, `"the framing"`, `"push back on"`, etc.). If detected, the message is discarded with a warning log rather than sent to Daniel.
+
+**Reach-out recency tracking** — `getLastOutcomeTime('%reach_out%')` uses a substring LIKE pattern so it matches both `reach_out` and `reflection_and_reach_out` outcomes correctly.
 
 **Flags only consumed on success** — `reflectionFlags.forEach(f => markFlagSurfaced(f.id))` only runs if content was actually written to `growth.md`. If the LLM returns "nothing" or throws, flags stay unsurfaced and reappear at the next pulse.
 
@@ -353,7 +361,7 @@ Fires roughly every 10–20 days. Rarer and more serious than the regular pulse.
 
 **Encoding on append** — the cipher is character-by-character and stateless. `encode(A) + encode(B) = encode(A + B)`, so appending independently-encoded entries is safe. `persona.ts` decodes the whole file at once and recovers the full plain text correctly.
 
-**`familiarPreference: 'local'`** — signals that this internal reasoning should stay on local Ollama if at all possible. The bedrock pulse is the most private request type.
+**Always Opus** — `internal` type routes as `immediate` / `allow_local: false` / `quality` tier. The bedrock writing decision always goes to Claude Opus — the most consequential and least frequent call in the system. Local 3B only runs in `identifyCandidates()`, which is a screening step, not the decision itself.
 
 ---
 

@@ -32,7 +32,7 @@ TELEGRAM_BOT_TOKEN=...
 
 # Optional — defaults shown
 OLLAMA_BASE_URL=http://localhost:11434        # local Ollama (Mac Mini)
-OLLAMA_PC_BASE_URL=http://192.168.x.x:11434  # PC Ollama for heavy inference
+OLLAMA_PC_BASE_URL=http://192.168.x.x:11434  # PC Ollama for heavy inference (routing currently disabled)
 DANIEL_TIMEZONE=Australia/Sydney             # IANA timezone for temporal context + quiet hours
 QUIET_HOURS_START=22                         # no reach-outs after this hour
 QUIET_HOURS_END=8                            # no reach-outs before this hour

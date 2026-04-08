@@ -71,7 +71,9 @@ export async function notifyDaniel(text: string): Promise<void> {
     log.warn('notifyDaniel: no chat ID yet — waiting for first message from Daniel')
     return
   }
-  await bot.api.sendMessage(chatId, text)
+  for (let i = 0; i < text.length; i += 4096) {
+    await bot.api.sendMessage(chatId, text.slice(i, i + 4096))
+  }
 }
 
 registerChannel(new TelegramChannel())

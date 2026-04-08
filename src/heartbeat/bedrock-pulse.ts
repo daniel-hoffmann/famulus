@@ -82,7 +82,6 @@ async function runBedrockPulse(): Promise<void> {
       containsBedrock: true,
       systemPrompt,
       messages: [{ role: 'user', content: pulseMessage }],
-      familiarPreference: 'local',
     })
 
     const bedrockMatch = response.content.match(/BEDROCK:\s*([\s\S]*?)(?:\/BEDROCK|$)/i)

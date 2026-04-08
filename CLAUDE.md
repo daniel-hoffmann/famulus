@@ -40,7 +40,7 @@ Everything else uses Node built-ins. No ORM, no framework, no test framework ini
 
 ### Entry & wiring
 
-`src/index.ts` — startup only. Runs soul integrity check first, then wires config → db → persona → channels → LLM router → heartbeat.
+`src/index.ts` — startup only. Runs soul integrity check first, then wires config → db → persona → channels → LLM router → heartbeat. Also contains `appendToSessionLog()`, which writes every conversation turn to `contexts/personal/memory/YYYY-MM-DD.md` for daily session logs.
 
 ### Soul protection
 
@@ -63,7 +63,11 @@ bedrock.md     → earned convictions (Familiar-only, encoded in cipher, private
 
 `buildTemporalContext()` in `src/persona.ts` appends Daniel's current local time (derived from `DANIEL_TIMEZONE`) to every system prompt, so Ellis is always time-aware.
 
+`buildCacheablePrefix()` returns soul + identity only — the stable, rarely-changing layers. In `claude.ts`, when a `cacheablePrefix` is provided, the system prompt is split into two blocks: the prefix marked `cache_control: ephemeral` (prompt caching), and the dynamic suffix (growth, bedrock, user, memory, temporal) sent separately. Conversation requests always pass a `cacheablePrefix`; other request types do not.
+
 `user.md` is automatically updated by the post-processor after notable+ conversations via a `memory_update` LLM call. `identity.md` is Daniel-controlled only — Ellis's developing interests and convictions surface through `growth.md` and `bedrock.md` instead.
+
+`heartbeat.md` is encrypted and git-tracked but is not currently injected into the system prompt. Reserved for future use.
 
 ### LLM routing
 
@@ -79,16 +83,22 @@ Request → [meta-router: local LLM or config fallback]
 
 Request types: `conversation`, `reach_out`, `reflection`, `memory_update`, `task`, `internal`.
 
-- `conversation` / `reach_out` → immediate, cloud (Sonnet)
-- `reflection` / `internal` → queued up to 24h, local preferred, cloud fallback
-- `memory_update` → queued up to 6h, local preferred
+- `conversation` → immediate, cloud (Sonnet), web search enabled (`web_search_20250305`, max 5 uses per call)
+- `reach_out` → immediate, cloud (Sonnet)
+- `reflection` → immediate, cloud (Sonnet)
+- `memory_update` → queued up to 6h, cloud (Sonnet) — no local
+- `internal` → immediate, cloud (Opus) — bedrock pulse only
 
 Model tiers map in `config/llm.json` (git-tracked, no personal data):
 - economy → `claude-haiku-4-5` / `llama3.2:3b`
 - balanced → `claude-sonnet-4-6` / `llama3.1:70b`
 - quality → `claude-opus-4-6`
 
-The meta-router uses a local 3B model (`llama3.2:3b`) to make tier decisions dynamically. Falls back to config defaults when local is unavailable. All Ollama calls that expect structured output pass `format: "json"` to force JSON responses. Using 3b consistently across all local calls (meta-router, post-processor, bedrock candidate scan) means a single model stays warm for speed.
+The meta-router (`config/llm.json` → `meta_router.enabled`) is currently disabled. When enabled it uses `llama3.2:3b` to dynamically pick a tier per request, but the risk of it downgrading important calls (bedrock, memory updates) outweighs the benefit at this scale.
+
+All Ollama calls that expect structured output pass `format: "json"` to force JSON responses. The 3B model is still used in two places: `pulse.ts` `makeDecision()` (reflect/reach-out yes/no) and `bedrock-pulse.ts` `identifyCandidates()` (screening growth.md for candidates). Both are decision/screening tasks, not content generation.
+
+PC routing (70B model via `OLLAMA_PC_BASE_URL`) is defined in `router.ts` but currently commented out — re-enable once the PC has Linux + Ollama installed.
 
 `Message.content` is `string | ContentBlock[]`. Messages with image content are passed through to Claude natively; Ollama-bound calls receive text-only via `toTextMessages()`.
 
@@ -106,7 +116,7 @@ The Familiar's proactive life. Implemented in `src/heartbeat/`:
 
 - **pulse.ts** — fires every 2-5h (randomised). Local 3B decides whether to reflect and/or reach out based on time elapsed and pending reflection flags. Reflection flags are a strong signal — if any are pending, the model defaults to reflecting. Reach-outs are suppressed during quiet hours (hard guardrail in code, not model judgment). Reflection flags are only consumed when a reflection is actually written. Bedrock flags are left for the bedrock pulse.
 - **bedrock-pulse.ts** — fires every 10-20 days. Local model reads `growth.md` and any pending bedrock flags, surfaces candidates. Ellis (Claude) decides whether to encode anything into `bedrock.md`. Bedrock flags are marked surfaced after the pulse regardless of outcome.
-- **post-processor.ts** — runs after every conversation. Local 3B assesses significance with a 2-3 sentence summary. Flags significant conversations for reflection, very_significant for both reflection and bedrock. Notable+ conversations trigger a `memory_update` call to keep `user.md` current.
+- **post-processor.ts** — runs after every conversation. Claude Haiku assesses significance with a 2-3 sentence summary (`memory_update` type, `economy` tier). Flags significant conversations for reflection, very_significant for both reflection and bedrock. Notable+ conversations trigger a `memory_update` call (Sonnet) to keep `user.md` current. Ellis's full system prompt is passed to `updateUserMemory` so the profile is written from Ellis's perspective.
 - **observer.ts** — observes post-pulse output, classifies what happened, logs to SQLite.
 
 The Familiar does not know the pulse is a cron job. It experiences each pulse as a moment of quiet.
@@ -131,10 +141,11 @@ Bedrock is stored encoded. soul.md must not change — it is the cipher key. If 
 
 ```
 src/
-  index.ts                  startup, wiring, soul integrity check
+  index.ts                  startup, wiring, session logging (appendToSessionLog)
   config.ts                 constants, env vars, paths
   db.ts                     all SQLite operations
-  persona.ts                system prompt builder + buildTemporalContext()
+  logger.ts                 pino loggers: log, internalLog, verboseLog
+  persona.ts                system prompt builder, buildTemporalContext(), buildCacheablePrefix()
   channels/
     registry.ts             Channel interface + registry
     telegram.ts             Grammy implementation, photo download
@@ -144,7 +155,7 @@ src/
     meta.ts                 meta-routing via local LLM
     queue.ts                request queue with per-type timeouts
     providers/
-      claude.ts             Anthropic SDK wrapper
+      claude.ts             Anthropic SDK wrapper (prompt caching, web search)
       ollama.ts             raw fetch Ollama wrapper
   heartbeat/
     pulse.ts                regular pulse, quiet hours guard, reflection/reach-out logic
@@ -158,11 +169,18 @@ src/
     soul-guard.ts           startup soul integrity check
 config/
   llm.json                   routing config (git-tracked, plaintext)
+docs/
+  future.md                  future plans and ideas
+  project-plan.md            project roadmap
+  walkthrough.md             architecture walkthrough
+launchd/
+  com.famulus.plist          launchd service definition for macOS autostart
 contexts/
   global/memory.md          shared curated facts (≤150 lines)
   personal/memory.md        main conversation context
-  personal/memory/          daily session logs (YYYY-MM-DD.md)
+  personal/memory/          daily session logs (YYYY-MM-DD.md), written by appendToSessionLog()
 soul.md / identity.md / growth.md / bedrock.md / user.md / heartbeat.md
+soul.template.md / user.template.md / heartbeat.template.md  (plaintext scaffolds, git-tracked)
 soul.md.sha256              reference hash for soul integrity check (git-tracked, plaintext)
 store/                      gitignored — SQLite db
 logs/                       gitignored — famulus.log + internal.log (bedrock calls)
@@ -227,7 +245,7 @@ Set `VERBOSE=true` in `.env` to enable additional heartbeat detail: pulse contex
 ## Hardware context
 
 - **Mac Mini M1 (8GB)** — always-on host. Runs the Node process + Ollama `llama3.2:3b` (meta-routing, post-processor, economy tasks). `OLLAMA_BASE_URL=http://localhost:11434`
-- **PC (RTX 4080 Super)** — heavy local inference (70B). `OLLAMA_PC_BASE_URL=http://192.168.x.x:11434`. Available when on.
+- **PC (RTX 4080 Super)** — heavy local inference (70B). `OLLAMA_PC_BASE_URL=http://192.168.x.x:11434`. PC routing is currently disabled (commented out in `router.ts`) — pending Linux + Ollama setup on the PC.
 
 ---
 

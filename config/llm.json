@@ -24,12 +24,12 @@
     "conversation":   { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
     "reach_out":      { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
     "reflection":     { "default_tier": "balanced", "urgency": "immediate", "allow_local": false },
-    "memory_update":  { "default_tier": "economy",  "urgency": "queued",    "allow_local": true, "queue_timeout_hours": 6 },
-    "internal":       { "default_tier": "balanced", "urgency": "whenever",  "allow_local": true, "prefer_local": true, "queue_timeout_hours": 24 },
+    "memory_update":  { "default_tier": "balanced", "urgency": "queued",    "allow_local": false, "queue_timeout_hours": 6 },
+    "internal":       { "default_tier": "quality",  "urgency": "immediate", "allow_local": false },
     "task":           { "default_tier": "balanced", "urgency": "queued" }
   },
   "meta_router": {
-    "enabled": true,
+    "enabled": false,
     "model": "llama3.2:3b"
   }
 }

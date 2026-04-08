@@ -1,13 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
-import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { route } from '../llm/router.js'
 import { addFlag } from './queue.js'
-import { env, USER_PATH, GROWTH_PATH } from '../config.js'
+import { USER_PATH, GROWTH_PATH } from '../config.js'
 import { buildSystemPrompt } from '../persona.js'
 import { log, verboseLog } from '../logger.js'
 import type { Message } from '../llm/router.js'
-
-const META_MODEL = 'llama3.2:3b'
 
 // Extract plain text from a message — content may be string or ContentBlock[]
 function textContent(m: Message): string {
@@ -16,13 +13,6 @@ function textContent(m: Message): string {
 }
 
 export async function assessConversation(messages: Message[]): Promise<void> {
-  const baseUrl = env.OLLAMA_BASE_URL
-
-  if (!await isOllamaAvailable(baseUrl)) {
-    log.info('post-processor: local model unavailable, skipping assessment')
-    return
-  }
-
   const transcript = messages
     .map(m => `${m.role}: ${textContent(m).slice(0, 500)}`)
     .join('\n')
@@ -35,10 +25,13 @@ export async function assessConversation(messages: Message[]): Promise<void> {
     `JSON only: {"significance":"none"|"notable"|"significant"|"very_significant","summary":"two or three sentences capturing what happened and why it matters"}`
 
   try {
-    const raw = await callOllama(
-      { model: META_MODEL, systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
-      baseUrl
-    )
+    const raw = (await route({
+      type: 'memory_update',
+      containsBedrock: false,
+      systemPrompt: '',
+      messages: [{ role: 'user', content: prompt }],
+      familiarPreference: 'economy',
+    })).content
     const match = raw.match(/\{[^{}]*\}/)
     if (!match) {
       log.warn('post-processor: no JSON in response')
@@ -116,7 +109,7 @@ async function updateUserMemory(messages: Message[]): Promise<void> {
   const response = await route({
     type: 'memory_update',
     containsBedrock: false,
-    systemPrompt: '',
+    systemPrompt: buildSystemPrompt(),
     messages: [{ role: 'user', content: prompt }],
   })
 
