@@ -1,15 +1,18 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { route } from '../llm/router.js'
 import { buildSystemPrompt } from '../persona.js'
-import { getPendingFlags, markFlagSurfaced, type PendingFlag } from './queue.js'
+import { getPendingFlags, markFlagSurfaced, type PendingFlag } from '../db.js'
 import { getLastOutcomeTime } from '../db.js'
 import { observeRegularPulse } from './observer.js'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { notifyDaniel } from '../channels/telegram.js'
-import { GROWTH_PATH, env } from '../config.js'
-import { buildTemporalContext } from '../persona.js'
+import { readFileSync } from 'fs'
+import { LLM_CONFIG_PATH, env } from '../config.js'
+import { buildTemporalContext, appendToGrowth } from '../persona.js'
 import { addMessage } from '../db.js'
 import { log, verboseLog } from '../logger.js'
+import { extractJSON } from '../utils.js'
+
+const META_MODEL: string = JSON.parse(readFileSync(LLM_CONFIG_PATH, 'utf8')).providers.ollama_mini.models.meta
 
 const PULSE_MIN_MS = 2 * 60 * 60 * 1000  // 2 hours
 const PULSE_MAX_MS = 5 * 60 * 60 * 1000  // 5 hours
@@ -73,15 +76,14 @@ async function makeDecision(context: string, hasFlags: boolean): Promise<{ refle
 
   try {
     const raw = await callOllama(
-      { model: 'llama3.2:3b', systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
+      { model: META_MODEL, systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
       baseUrl
     )
-    const match = raw.match(/\{[^{}]*\}/)
-    if (!match) {
+    const parsed = extractJSON<{ reflect?: boolean; reach_out?: boolean }>(raw)
+    if (!parsed) {
       // If the model fails but there are flags, default to reflecting
       return { reflect: hasFlags, reachOut: false }
     }
-    const parsed = JSON.parse(match[0]) as { reflect?: boolean; reach_out?: boolean }
     return {
       reflect: parsed.reflect === true || hasFlags,  // flags override a 'no'
       reachOut: parsed.reach_out === true,
@@ -137,10 +139,7 @@ async function runPulse(): Promise<void> {
 
       const content = reflectionResponse.content.trim()
       if (content && content.toLowerCase() !== 'nothing') {
-        const date = new Date().toISOString().split('T')[0]
-        const entry = `\n\n## ${date}\n\n${content}`
-        const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
-        writeFileSync(GROWTH_PATH, current + entry, 'utf8')
+        appendToGrowth(content)
         // Only mark reflection flags surfaced when a reflection was actually written
         reflectionFlags.forEach(f => markFlagSurfaced(f.id))
         reflected = true

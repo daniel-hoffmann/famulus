@@ -1,10 +1,11 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { route } from '../llm/router.js'
-import { addFlag, markFlagSurfaced } from './queue.js'
-import { USER_PATH, GROWTH_PATH } from '../config.js'
-import { buildSystemPrompt } from '../persona.js'
+import { addFlag, markFlagSurfaced } from '../db.js'
+import { USER_PATH } from '../config.js'
+import { buildSystemPrompt, appendToGrowth } from '../persona.js'
 import { log, verboseLog } from '../logger.js'
 import type { Message } from '../llm/router.js'
+import { extractJSON } from '../utils.js'
 
 // Extract plain text from a message — content may be string or ContentBlock[]
 function textContent(m: Message): string {
@@ -32,12 +33,11 @@ export async function assessConversation(messages: Message[]): Promise<void> {
       messages: [{ role: 'user', content: prompt }],
       familiarPreference: 'economy',
     })).content
-    const match = raw.match(/\{[^{}]*\}/)
-    if (!match) {
+    const result = extractJSON<{ significance: string; summary: string }>(raw)
+    if (!result) {
       log.warn('post-processor: no JSON in response')
       return
     }
-    const result = JSON.parse(match[0]) as { significance: string; summary: string }
 
     if (result.significance === 'significant') {
       addFlag('reflection', result.summary)
@@ -82,10 +82,7 @@ async function triggerImmediateReflection(messages: Message[], summary: string, 
   const content = response.content.trim()
   if (!content || content.toLowerCase() === 'nothing') return
 
-  const date = new Date().toISOString().split('T')[0]
-  const entry = `\n\n## ${date}\n\n${content}`
-  const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
-  writeFileSync(GROWTH_PATH, current + entry, 'utf8')
+  appendToGrowth(content)
   markFlagSurfaced(flagId)  // prevent the pulse from reflecting on the same event again
   log.info('post-processor: immediate reflection written')
 }

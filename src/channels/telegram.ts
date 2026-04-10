@@ -7,15 +7,15 @@ import { type Channel, type MessageHandler, registerChannel } from './registry.j
 const bot = new Bot(env.TELEGRAM_BOT_TOKEN)
 let chatId: number | null = null
 
-async function sendReply(ctx: Context, response: string): Promise<void> {
-  // Telegram max message length is 4096 chars
-  if (response.length <= 4096) {
-    await ctx.reply(response)
-  } else {
-    for (let i = 0; i < response.length; i += 4096) {
-      await ctx.reply(response.slice(i, i + 4096))
-    }
+// Telegram max message length is 4096 chars
+async function sendChunked(targetChatId: number, text: string): Promise<void> {
+  for (let i = 0; i < text.length; i += 4096) {
+    await bot.api.sendMessage(targetChatId, text.slice(i, i + 4096))
   }
+}
+
+async function sendReply(ctx: Context, response: string): Promise<void> {
+  await sendChunked(ctx.chat!.id, response)
 }
 
 async function downloadPhoto(ctx: Context): Promise<string | null> {
@@ -71,9 +71,7 @@ export async function notifyDaniel(text: string): Promise<void> {
     log.warn('notifyDaniel: no chat ID yet — waiting for first message from Daniel')
     return
   }
-  for (let i = 0; i < text.length; i += 4096) {
-    await bot.api.sendMessage(chatId, text.slice(i, i + 4096))
-  }
+  await sendChunked(chatId, text)
 }
 
 registerChannel(new TelegramChannel())

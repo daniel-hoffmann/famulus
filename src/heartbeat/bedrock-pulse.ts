@@ -4,11 +4,11 @@ import { buildSystemPrompt } from '../persona.js'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
 import { encode } from '../cipher/index.js'
 import { observeBedrockPulse } from './observer.js'
-import { getPendingFlags, markFlagSurfaced } from './queue.js'
-import { GROWTH_PATH, BEDROCK_PATH, env } from '../config.js'
+import { getPendingFlags, markFlagSurfaced } from '../db.js'
+import { GROWTH_PATH, BEDROCK_PATH, LLM_CONFIG_PATH, env } from '../config.js'
 import { log, verboseLog } from '../logger.js'
 
-const CANDIDATE_MODEL = 'llama3.2:3b'  // more capable than 1B for reading growth.md
+const CANDIDATE_MODEL: string = JSON.parse(readFileSync(LLM_CONFIG_PATH, 'utf8')).providers.ollama_mini.models.meta
 const BEDROCK_MIN_DAYS = 10
 const BEDROCK_MAX_DAYS = 20
 

@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import {
   SOUL_PATH,
@@ -17,6 +17,14 @@ function readFile(filePath: string): string | null {
   if (!existsSync(filePath)) return null
   const content = readFileSync(filePath, 'utf8').trim()
   return content || null
+}
+
+// Append a dated entry to growth.md — shared by pulse and post-processor
+export function appendToGrowth(content: string): void {
+  const date = new Date().toISOString().split('T')[0]
+  const entry = `\n\n## ${date}\n\n${content}`
+  const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
+  writeFileSync(GROWTH_PATH, current + entry, 'utf8')
 }
 
 // Returns the current local time in Daniel's timezone as a short context string

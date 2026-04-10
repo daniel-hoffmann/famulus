@@ -1,5 +1,6 @@
 import type { ModelTier, RequestType } from './router.js'
 import { callOllama, isOllamaAvailable } from './providers/ollama.js'
+import { extractJSON } from '../utils.js'
 
 export async function getMetaTier(
   type: RequestType,
@@ -30,10 +31,8 @@ export async function getMetaTier(
       { model: metaModel, systemPrompt: '', messages: [{ role: 'user', content: prompt }], format: 'json' },
       baseUrl
     )
-    const match = raw.match(/\{[^{}]*\}/)
-    if (!match) return null
-    const parsed = JSON.parse(match[0]) as { tier?: string }
-    if (parsed.tier && ['economy', 'balanced', 'quality'].includes(parsed.tier)) {
+    const parsed = extractJSON<{ tier?: string }>(raw)
+    if (parsed?.tier && ['economy', 'balanced', 'quality'].includes(parsed.tier)) {
       return parsed.tier as ModelTier
     }
     return null
