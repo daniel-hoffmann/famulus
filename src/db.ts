@@ -137,8 +137,9 @@ export function getLastOutcomeTime(outcomePattern: string): number | null {
 
 // --- Pending flags ---
 
-export function addFlag(type: FlagType, summary: string): void {
-  stmts.addFlag.run(type, summary, Date.now())
+export function addFlag(type: FlagType, summary: string): number {
+  const result = stmts.addFlag.run(type, summary, Date.now())
+  return result.lastInsertRowid as number
 }
 
 export function getPendingFlags(): PendingFlag[] {

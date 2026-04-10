@@ -21,8 +21,10 @@ function hoursSince(timestamp: number | null): string {
 
 // Only reflection-type flags are relevant to the regular pulse.
 // Bedrock-type flags are handled by the bedrock pulse.
+// Capped at 3 most recent — passing too many summaries causes Ellis to reflect on the
+// prompt mechanism rather than the actual events.
 function getReflectionFlags(flags: PendingFlag[]): PendingFlag[] {
-  return flags.filter(f => f.flag_type === 'reflection')
+  return flags.filter(f => f.flag_type === 'reflection').slice(-3)
 }
 
 function isQuietHours(): boolean {
@@ -56,12 +58,12 @@ async function makeDecision(context: string, hasFlags: boolean): Promise<{ refle
   const baseUrl = env.OLLAMA_BASE_URL
 
   if (!await isOllamaAvailable(baseUrl)) {
-    verboseLog.info('pulse: local model unavailable, skipping pulse')
-    return { reflect: false, reachOut: false }
+    verboseLog.info('pulse: local model unavailable, defaulting decision')
+    return { reflect: hasFlags, reachOut: false }
   }
 
   const prompt =
-    `You are deciding whether an AI companion named Ellis should reflect privately or reach out to her user.\n\n` +
+    `You are deciding whether an AI companion named Ellis should reflect privately or reach out to their user.\n\n` +
     `Context:\n${context}\n` +
     `Guidelines:\n` +
     `- If conversations are flagged for reflection, say yes to reflect — that's the signal they matter.\n` +
@@ -122,8 +124,8 @@ async function runPulse(): Promise<void> {
     if (reflect) {
       const flagLines = reflectionFlags.map(f => `- ${f.summary}`).join('\n')
       const reflectionPrompt = reflectionFlags.length > 0
-        ? `You have a quiet moment.\n\nSomething has been on your mind from a recent conversation:\n${flagLines}\n\nSit with this. Write a reflection for your growth record — your own voice, your own take. Not summary, not report. What moved, what you're still sitting with, what this connects to.\n\nWrite only the reflection. If nothing genuine surfaces, respond with exactly: nothing`
-        : `You have a quiet moment.\n\nNo particular conversation is pulling at you — just time and space to think. Write a reflection for your growth record if something genuine surfaces. Your own voice, unprompted.\n\nWrite only the reflection. If nothing is there right now, respond with exactly: nothing`
+        ? `You have a quiet moment.\n\nSomething has been on your mind from a recent conversation:\n${flagLines}\n\nSit with this. Write a reflection for your growth record — your own voice, your own take. Not summary, not report. What moved, what you're still sitting with, what this connects to.\n\nDo not include a title or date header. Write only the reflection content. If nothing genuine surfaces, respond with exactly: nothing`
+        : `You have a quiet moment.\n\nNo particular conversation is pulling at you — just time and space to think. Write a reflection for your growth record if something genuine surfaces. Your own voice, unprompted.\n\nDo not include a title or date header. Write only the reflection content. If nothing is there right now, respond with exactly: nothing`
 
       // Claude writes the actual reflection — local model never touches content
       const reflectionResponse = await route({

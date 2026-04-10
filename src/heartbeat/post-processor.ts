@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { route } from '../llm/router.js'
-import { addFlag } from './queue.js'
+import { addFlag, markFlagSurfaced } from './queue.js'
 import { USER_PATH, GROWTH_PATH } from '../config.js'
 import { buildSystemPrompt } from '../persona.js'
 import { log, verboseLog } from '../logger.js'
@@ -42,9 +42,9 @@ export async function assessConversation(messages: Message[]): Promise<void> {
     if (result.significance === 'significant') {
       addFlag('reflection', result.summary)
     } else if (result.significance === 'very_significant') {
-      addFlag('reflection', result.summary)
+      const reflectionFlagId = addFlag('reflection', result.summary)
       addFlag('bedrock', result.summary)
-      triggerImmediateReflection(messages, result.summary).catch(err => log.warn({ err }, 'post-processor: immediate reflection failed'))
+      triggerImmediateReflection(messages, result.summary, reflectionFlagId).catch(err => log.warn({ err }, 'post-processor: immediate reflection failed'))
     }
 
     log.info({ significance: result.significance }, 'post-processor: assessment complete')
@@ -58,7 +58,7 @@ export async function assessConversation(messages: Message[]): Promise<void> {
   }
 }
 
-async function triggerImmediateReflection(messages: Message[], summary: string): Promise<void> {
+async function triggerImmediateReflection(messages: Message[], summary: string, flagId: number): Promise<void> {
   const excerpt = messages
     .slice(-6)
     .map(m => `${m.role}: ${textContent(m).slice(0, 400)}`)
@@ -74,7 +74,7 @@ async function triggerImmediateReflection(messages: Message[], summary: string):
         `Something significant just happened in that conversation.\n\n` +
         `What it was about: ${summary}\n\n` +
         `Recent exchange:\n${excerpt}\n\n` +
-        `If something is genuinely pressing — not just notable but actually urgent to sit with right now — write a reflection. Your own voice, your own take.\n\n` +
+        `If something is genuinely pressing — not just notable but actually urgent to sit with right now — write a reflection. Your own voice, your own take. Do not include a title or date header.\n\n` +
         `If it can wait for a quieter moment, let it pass. Respond with exactly: nothing`,
     }],
   })
@@ -86,6 +86,7 @@ async function triggerImmediateReflection(messages: Message[], summary: string):
   const entry = `\n\n## ${date}\n\n${content}`
   const current = existsSync(GROWTH_PATH) ? readFileSync(GROWTH_PATH, 'utf8') : ''
   writeFileSync(GROWTH_PATH, current + entry, 'utf8')
+  markFlagSurfaced(flagId)  // prevent the pulse from reflecting on the same event again
   log.info('post-processor: immediate reflection written')
 }
 
