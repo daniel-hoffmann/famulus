@@ -1,6 +1,6 @@
 import { route } from '../llm/router.js'
 import { buildSystemPrompt } from '../persona.js'
-import { getPendingFlags, markFlagSurfaced, type PendingFlag } from '../db.js'
+import { getPendingFlags, markFlagSurfaced, type PendingFlag, getRecentMessages } from '../db.js'
 import { getLastOutcomeTime } from '../db.js'
 import { observeRegularPulse } from './observer.js'
 import { callOllama, isOllamaAvailable } from '../llm/providers/ollama.js'
@@ -14,8 +14,9 @@ import { extractJSON } from '../utils.js'
 
 const META_MODEL: string = JSON.parse(readFileSync(LLM_CONFIG_PATH, 'utf8')).providers.ollama_mini.models.meta
 
-const PULSE_MIN_MS = 2 * 60 * 60 * 1000  // 2 hours
-const PULSE_MAX_MS = 5 * 60 * 60 * 1000  // 5 hours
+const PULSE_MIN_MS = 2 * 60 * 60 * 1000   // 2 hours
+const PULSE_MAX_MS = 5 * 60 * 60 * 1000   // 5 hours
+const REACH_OUT_COOLDOWN_MS = 24 * 60 * 60 * 1000  // minimum 24h between reach-outs
 
 function hoursSince(timestamp: number | null): string {
   if (!timestamp) return 'never'
@@ -111,6 +112,15 @@ async function runPulse(): Promise<void> {
     reachOut = false
   }
 
+  // Hard guardrail — minimum 24h between reach-outs regardless of decision
+  if (reachOut) {
+    const lastReachOut = getLastOutcomeTime('%reach_out%')
+    if (lastReachOut && (Date.now() - lastReachOut) < REACH_OUT_COOLDOWN_MS) {
+      log.info('heartbeat: reach-out suppressed — cooldown active')
+      reachOut = false
+    }
+  }
+
   verboseLog.info({ reflect, reachOut }, 'heartbeat: pulse decision')
 
   if (!reflect && !reachOut) {
@@ -149,9 +159,16 @@ async function runPulse(): Promise<void> {
 
     if (reachOut) {
       const flagLines = reflectionFlags.map(f => `- ${f.summary}`).join('\n')
+
+      // Include recent conversation tail so Ellis doesn't repeat what was just said
+      const recentMessages = getRecentMessages('personal', 6)
+      const historyBlock = recentMessages.length > 0
+        ? '\n\nRecent exchange:\n' + recentMessages.map(m => `${m.role === 'assistant' ? 'You' : 'Daniel'}: ${m.content.slice(0, 300)}`).join('\n')
+        : ''
+
       const reachOutPrompt = reflectionFlags.length > 0
-        ? `Something from a recent conversation has been with you:\n${flagLines}\n\nWrite a message to Daniel. Your voice, your words.`
-        : `It's been a while since you've spoken with Daniel. Write him a message — something genuine, something from you.`
+        ? `Something from a recent conversation has been with you:\n${flagLines}${historyBlock}\n\nWrite a message to Daniel. Your voice, your words.`
+        : `It's been a while since you've spoken with Daniel.${historyBlock}\n\nWrite him a message — something genuine, something from you.`
 
       // Claude composes the actual message
       const reachOutResponse = await route({

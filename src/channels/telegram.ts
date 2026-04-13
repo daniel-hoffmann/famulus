@@ -2,10 +2,14 @@ import { Bot, type Context } from 'grammy'
 import { env } from '../config.js'
 import { log } from '../logger.js'
 import { type Channel, type MessageHandler, registerChannel } from './registry.js'
+import { kvGet, kvSet } from '../db.js'
 
 // Module-level bot and chat ID — needed for proactive reach-outs from the heartbeat
 const bot = new Bot(env.TELEGRAM_BOT_TOKEN)
-let chatId: number | null = null
+
+// Restore chatId from DB so reach-outs survive restarts
+const stored = kvGet('telegram_chat_id')
+let chatId: number | null = stored ? parseInt(stored, 10) : null
 
 // Telegram max message length is 4096 chars
 async function sendChunked(targetChatId: number, text: string): Promise<void> {
@@ -33,7 +37,10 @@ async function downloadPhoto(ctx: Context): Promise<string | null> {
 class TelegramChannel implements Channel {
   start(handler: MessageHandler): void {
     bot.on('message:text', async (ctx) => {
-      chatId = ctx.chat.id  // capture on every message (stable — it's always Daniel)
+      if (chatId !== ctx.chat.id) {
+        chatId = ctx.chat.id
+        kvSet('telegram_chat_id', String(chatId))
+      }
       try {
         const response = await handler(ctx.message.text)
         await sendReply(ctx, response)
@@ -44,7 +51,10 @@ class TelegramChannel implements Channel {
     })
 
     bot.on('message:photo', async (ctx) => {
-      chatId = ctx.chat.id
+      if (chatId !== ctx.chat.id) {
+        chatId = ctx.chat.id
+        kvSet('telegram_chat_id', String(chatId))
+      }
       try {
         const imageBase64 = await downloadPhoto(ctx)
         if (!imageBase64) {
@@ -65,11 +75,10 @@ class TelegramChannel implements Channel {
 }
 
 // Called by the heartbeat when The Familiar wants to reach out proactively
-// Fails silently if no message has been received yet (no chat ID stored)
+// Throws if no chat ID is known — caller's catch block handles this correctly
 export async function notifyDaniel(text: string): Promise<void> {
   if (!chatId) {
-    log.warn('notifyDaniel: no chat ID yet — waiting for first message from Daniel')
-    return
+    throw new Error('notifyDaniel: no chat ID yet — waiting for first message from Daniel')
   }
   await sendChunked(chatId, text)
 }

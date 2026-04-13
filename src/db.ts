@@ -69,6 +69,11 @@ db.exec(`
     created_at  INTEGER NOT NULL,
     surfaced_at INTEGER
   );
+
+  CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `)
 
 // --- Prepared statements ---
@@ -104,6 +109,14 @@ const stmts = {
 
   markFlagSurfaced: db.prepare<[number, number]>(
     'UPDATE pending_flags SET surfaced_at = ? WHERE id = ?'
+  ),
+
+  kvGet: db.prepare<[string]>(
+    'SELECT value FROM kv WHERE key = ?'
+  ),
+
+  kvSet: db.prepare<[string, string]>(
+    'INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   ),
 }
 
@@ -148,4 +161,15 @@ export function getPendingFlags(): PendingFlag[] {
 
 export function markFlagSurfaced(id: number): void {
   stmts.markFlagSurfaced.run(Date.now(), id)
+}
+
+// --- KV store ---
+
+export function kvGet(key: string): string | null {
+  const row = stmts.kvGet.get(key) as { value: string } | undefined
+  return row?.value ?? null
+}
+
+export function kvSet(key: string, value: string): void {
+  stmts.kvSet.run(key, value)
 }
